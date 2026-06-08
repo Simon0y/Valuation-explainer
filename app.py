@@ -11,6 +11,7 @@ Presentation helpers (theme, glossary popovers, charts) live in `ui.py`.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import replace
 
 import pandas as pd
@@ -172,11 +173,27 @@ with st.sidebar:
         ),
     )
 
+    st.divider()
+    st.caption(
+        "⚠️ **Educational use only — not investment advice.** Data may be delayed or "
+        "incomplete; valuations are illustrative and depend entirely on the assumptions "
+        "you set."
+    )
+
+# Ticker format: letters, digits, dots and hyphens (covers BRK.B, SAP.DE, RDS-A).
+TICKER_RE = re.compile(r"^[A-Z0-9.\-]{1,12}$")
+
 if not api_key:
     st.info("Add your FMP API key to get started (see the sidebar).")
     st.stop()
 if not symbol:
-    st.warning("Please enter a ticker.")
+    st.warning("Please enter a ticker in the sidebar (e.g. AAPL).")
+    st.stop()
+if not TICKER_RE.match(symbol):
+    st.warning(
+        "That doesn't look like a ticker. Use letters, digits, '.' or '-' "
+        "(e.g. `AAPL`, `BRK.B`, `SAP.DE`)."
+    )
     st.stop()
 
 try:
@@ -205,7 +222,7 @@ if not fin.years:
 # Reset interactive slider state when the loaded company changes.
 SLIDER_KEYS = [
     "dcf_wacc", "dcf_tg", "dcf_growth", "dcf_margin",
-    "lbo_lev", "lbo_hold", "lbo_exit",
+    "lbo_entry", "lbo_exit", "lbo_lev", "lbo_hold",
 ]
 if st.session_state.get("_loaded_symbol") != symbol:
     for k in SLIDER_KEYS:
@@ -325,26 +342,27 @@ with tab_dcf:
 
             ui.term_row(["fcff", "wacc", "terminal_value", "ev", "net_debt"])
 
-            # ---- Adjust assumptions ----
-            with st.expander("⚙️  Adjust assumptions"):
-                cc1, cc2 = st.columns(2)
-                with cc1:
-                    st.slider("WACC (discount rate)", 0.03, 0.20, step=0.0025,
-                              format="%.4f", key="dcf_wacc",
-                              help="Higher WACC → lower value. Seeded from CAPM.")
-                    st.slider("Terminal growth (g∞)", 0.0, 0.05, step=0.0025,
-                              format="%.4f", key="dcf_tg",
-                              help="Perpetual growth after the forecast. Must be < WACC.")
-                with cc2:
-                    st.slider("Revenue growth / yr", -0.10, 0.40, step=0.005,
-                              format="%.3f", key="dcf_growth")
-                    st.slider("EBIT margin", 0.0, 0.60, step=0.005,
-                              format="%.3f", key="dcf_margin")
-                st.caption(
-                    "WACC and terminal growth are decimals (e.g. 0.0900 = 9.00%). "
-                    "Move a slider and the valuation + chart update live."
-                )
+        # ---- Adjust assumptions (always rendered, so a bad combo can be undone) ----
+        with st.expander("⚙️  Adjust assumptions", expanded=(dcf is None)):
+            cc1, cc2 = st.columns(2)
+            with cc1:
+                st.slider("WACC (discount rate)", 0.03, 0.20, step=0.0025,
+                          format="%.4f", key="dcf_wacc",
+                          help="Higher WACC → lower value. Seeded from CAPM.")
+                st.slider("Terminal growth (g∞)", 0.0, 0.05, step=0.0025,
+                          format="%.4f", key="dcf_tg",
+                          help="Perpetual growth after the forecast. Must be < WACC.")
+            with cc2:
+                st.slider("Revenue growth / yr", -0.10, 0.40, step=0.005,
+                          format="%.3f", key="dcf_growth")
+                st.slider("EBIT margin", 0.0, 0.60, step=0.005,
+                          format="%.3f", key="dcf_margin")
+            st.caption(
+                "WACC and terminal growth are decimals (e.g. 0.0900 = 9.00%). "
+                "Move a slider and the valuation + chart update live."
+            )
 
+        if dcf is not None:
             # ---- Step-by-step walkthrough ----
             with st.expander("🔎  Step-by-step walkthrough"):
                 st.markdown(
@@ -419,18 +437,23 @@ with tab_lbo:
     if seed_lbo is None:
         st.warning("Not enough data to build an LBO (need positive EBITDA and a market cap).")
     else:
+        entry_default = round(_clamp(seed_lbo.entry_ev_ebitda, 3.0, 30.0), 1)
+        seed("lbo_entry", entry_default)
+        seed("lbo_exit", entry_default)
         seed("lbo_lev", 5.0)
         seed("lbo_hold", 5)
-        seed("lbo_exit", round(_clamp(seed_lbo.entry_ev_ebitda, 3.0, 30.0), 1))
 
+        entry_v = st.session_state["lbo_entry"]
+        exit_v = st.session_state["lbo_exit"]
         lev_v = st.session_state["lbo_lev"]
         hold_v = st.session_state["lbo_hold"]
-        exit_v = st.session_state["lbo_exit"]
 
         base_lbo = default_lbo_assumptions(
             fin, entry_leverage=lev_v, hold_years=int(hold_v)
         )
-        lbo_assumptions = replace(base_lbo, exit_ev_ebitda=exit_v)
+        lbo_assumptions = replace(
+            base_lbo, entry_ev_ebitda=entry_v, exit_ev_ebitda=exit_v
+        )
 
         try:
             lbo = run_lbo(lbo_assumptions)
@@ -448,22 +471,35 @@ with tab_lbo:
 
             ui.term_row(["leverage", "cash_sweep", "moic", "irr", "ev_ebitda"])
 
-            with st.expander("⚙️  Adjust assumptions"):
-                cc1, cc2, cc3 = st.columns(3)
-                with cc1:
-                    st.slider("Entry leverage (× EBITDA)", 0.0, 8.0, step=0.25,
-                              key="lbo_lev",
-                              help="Opening debt as a multiple of entry EBITDA.")
-                with cc2:
-                    st.slider("Hold period (years)", 1, 10, step=1, key="lbo_hold")
-                with cc3:
-                    st.slider("Exit EV/EBITDA (×)", 3.0, 30.0, step=0.5, key="lbo_exit",
-                              help=f"Entry multiple seeded at {seed_lbo.entry_ev_ebitda:.1f}×.")
-                st.caption(
-                    f"Entry multiple is fixed at the current {lbo_assumptions.entry_ev_ebitda:.1f}× "
-                    "EV/EBITDA; interest, EBITDA growth and capex are seeded from history."
+        # ---- Adjust assumptions (always rendered, so a bad combo can be undone) ----
+        with st.expander("⚙️  Adjust assumptions", expanded=True):
+            r1c1, r1c2 = st.columns(2)
+            with r1c1:
+                st.slider(
+                    "Entry EV/EBITDA (×)", 3.0, 30.0, step=0.5, key="lbo_entry",
+                    help=(
+                        f"Purchase multiple. Today's market level ≈ "
+                        f"{seed_lbo.entry_ev_ebitda:.1f}×. Lower it to a realistic "
+                        "8–12× and watch IRR/MOIC rise."
+                    ),
                 )
+            with r1c2:
+                st.slider("Exit EV/EBITDA (×)", 3.0, 30.0, step=0.5, key="lbo_exit",
+                          help="Sale multiple at the end of the hold period.")
+            r2c1, r2c2 = st.columns(2)
+            with r2c1:
+                st.slider("Entry leverage (× EBITDA)", 0.0, 8.0, step=0.25,
+                          key="lbo_lev",
+                          help="Opening debt as a multiple of entry EBITDA.")
+            with r2c2:
+                st.slider("Hold period (years)", 1, 10, step=1, key="lbo_hold")
+            st.caption(
+                "Interest, EBITDA growth and capex are seeded from history. If entry "
+                "leverage exceeds the entry multiple, sponsor equity turns negative and "
+                "the model flags it instead of producing a bogus return."
+            )
 
+        if lbo is not None:
             with st.expander("🔎  Step-by-step walkthrough"):
                 st.markdown("**Step 1 — Sources & Uses** (they must balance).")
                 su = lbo.sources_and_uses
@@ -528,6 +564,7 @@ with tab_lbo:
 
 st.divider()
 st.caption(
-    "Stage 3 of 4 complete: educational layer + visual design. Next: final polish and "
-    "deployment to Streamlit Community Cloud."
+    "⚠️ **Educational use only — not investment advice.** Built with Streamlit · data from "
+    "Financial Modeling Prep · valuation engine is open and unit-tested. All outputs depend "
+    "on the assumptions you choose and may rely on delayed or incomplete data."
 )
