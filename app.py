@@ -36,7 +36,7 @@ from engine.dcf import run_dcf
 from engine.lbo import run_lbo
 from engine.models import CompanyFinancials
 
-st.set_page_config(page_title="Valuation Explainer", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Valuation Explainer", page_icon="▪", layout="wide")
 ui.inject_css()
 
 
@@ -138,7 +138,7 @@ def financials_table(fin: CompanyFinancials) -> pd.DataFrame:
 # ======================================================================================
 # Header + sidebar
 # ======================================================================================
-st.title("📊 Valuation Explainer")
+st.title("Valuation Explainer")
 st.caption(
     "Learn **DCF** and **LBO** valuation on a real company — every term explained in plain "
     "language. _Educational use only; not investment advice._"
@@ -182,7 +182,7 @@ with st.sidebar:
 
     st.divider()
     st.caption(
-        "⚠️ **Educational use only — not investment advice.** Data may be delayed or "
+        "**Educational use only — not investment advice.** Data may be delayed or "
         "incomplete; valuations are illustrative and depend entirely on the assumptions "
         "you set."
     )
@@ -207,19 +207,19 @@ try:
     with st.spinner(f"Fetching {symbol} from Financial Modeling Prep…"):
         fin = load_financials(api_key, symbol, years_to_load)
 except FMPAuthError as exc:
-    st.error(f"🔑 {exc}")
+    st.error(str(exc))
     st.stop()
 except FMPPlanError as exc:
-    st.error(f"🔒 {exc}")
+    st.error(str(exc))
     st.stop()
 except FMPRateLimitError as exc:
-    st.error(f"⏳ {exc}")
+    st.error(str(exc))
     st.stop()
 except FMPNotFound as exc:
-    st.error(f"🔍 {exc} — is the ticker correct?")
+    st.error(f"{exc} — is the ticker correct?")
     st.stop()
 except FMPError as exc:
-    st.error(f"⚠️ {exc}")
+    st.error(str(exc))
     st.stop()
 
 if not fin.years:
@@ -263,26 +263,25 @@ st.subheader("Key financials")
 n_years = len(fin.years)
 if n_years < years_to_load:
     st.caption(
-        f"📅 Showing **{n_years}** year(s) — requested {years_to_load}, but the API "
+        f"Showing **{n_years}** year(s) — requested {years_to_load}, but the API "
         "returned fewer (common on the free FMP tier). Only the years actually returned "
         "are shown; nothing is padded or fabricated."
     )
 else:
-    st.caption(f"📅 Showing **{n_years}** year(s) of annual history.")
+    st.caption(f"Showing **{n_years}** year(s) of annual history.")
 st.caption(
     f"Reporting currency: **{cur}**. Figures are exactly as reported by the API (absolute "
     "units, newest year first). Capex is shown **negative** (a cash outflow); Δ working "
     "capital uses the **cash-flow-statement** sign (positive = working capital released "
     "cash)."
 )
-st.dataframe(financials_table(fin), use_container_width=True)
+st.table(financials_table(fin))
 st.info(
     "**Net debt definition (consistent everywhere):** this app uses **total debt − cash & "
     "short-term investments** — the same figure the DCF equity bridge uses. FMP's own "
     "`netDebt` field subtracts only *cash & equivalents* (not short-term investments), so "
     "it can differ by tens of billions for cash-rich firms; we deliberately don't use it. "
     "Turning on *Include long-term investments* (sidebar) subtracts those too in the bridge.",
-    icon="🧮",
 )
 
 st.divider()
@@ -302,7 +301,7 @@ if wacc_result is None:
     st.info("Can't compute a CAPM WACC without a market cap, so the valuation is unavailable.")
     st.stop()
 
-tab_dcf, tab_lbo = st.tabs(["💵  DCF", "🏦  LBO"])
+tab_dcf, tab_lbo = st.tabs(["DCF", "LBO"])
 
 # ----------------------------------------------------------------------------- DCF tab
 with tab_dcf:
@@ -336,7 +335,7 @@ with tab_dcf:
         try:
             dcf = run_dcf(dcf_assumptions)
         except ValueError as exc:
-            st.error(f"⚠️ {exc}")
+            st.error(str(exc))
             dcf = None
 
         if dcf is not None:
@@ -359,7 +358,7 @@ with tab_dcf:
             ui.term_row(["fcff", "wacc", "terminal_value", "ev", "net_debt"])
 
         # ---- Adjust assumptions (always rendered, so a bad combo can be undone) ----
-        with st.expander("⚙️  Adjust assumptions", expanded=(dcf is None)):
+        with st.expander("Adjust assumptions", expanded=(dcf is None)):
             cc1, cc2 = st.columns(2)
             with cc1:
                 st.slider("WACC (discount rate)", 0.03, 0.20, step=0.0025,
@@ -380,7 +379,7 @@ with tab_dcf:
 
         if dcf is not None:
             # ---- Step-by-step walkthrough ----
-            with st.expander("🔎  Step-by-step walkthrough"):
+            with st.expander("Step-by-step walkthrough"):
                 st.markdown(
                     "**Step 1 — Forecast unlevered free cash flow (FCFF) for each year.**  \n"
                     "For every year: `FCFF = EBIT×(1−tax) + D&A − Capex − ΔNWC`."
@@ -402,7 +401,7 @@ with tab_dcf:
                     fc_rows["FCFF"].append(fmt_money(y.fcff))
                     fc_rows["Discount factor"].append(f"{y.discount_factor:.4f}")
                     fc_rows["PV of FCFF"].append(fmt_money(y.pv_fcff))
-                st.dataframe(pd.DataFrame(fc_rows, index=cols).T, use_container_width=True)
+                st.table(pd.DataFrame(fc_rows, index=cols).T)
                 st.caption(
                     "Capex and ΔNWC are shown as the cash outflows the engine subtracts."
                 )
@@ -441,7 +440,7 @@ with tab_dcf:
                         "= Value per share",
                     ],
                 )
-                st.dataframe(bridge, use_container_width=True)
+                st.table(bridge)
                 ui.term_row(
                     ["capm", "beta", "erp", "nopat", "gordon_growth", "discount_factor"],
                     label="More terms from these steps:",
@@ -474,7 +473,7 @@ with tab_lbo:
         try:
             lbo = run_lbo(lbo_assumptions)
         except ValueError as exc:
-            st.error(f"⚠️ {exc}")
+            st.error(str(exc))
             lbo = None
 
         if lbo is not None:
@@ -488,7 +487,7 @@ with tab_lbo:
             ui.term_row(["leverage", "cash_sweep", "moic", "irr", "ev_ebitda"])
 
         # ---- Adjust assumptions (always rendered, so a bad combo can be undone) ----
-        with st.expander("⚙️  Adjust assumptions", expanded=True):
+        with st.expander("Adjust assumptions", expanded=True):
             r1c1, r1c2 = st.columns(2)
             with r1c1:
                 st.slider(
@@ -516,7 +515,7 @@ with tab_lbo:
             )
 
         if lbo is not None:
-            with st.expander("🔎  Step-by-step walkthrough"):
+            with st.expander("Step-by-step walkthrough"):
                 st.markdown("**Step 1 — Sources & Uses** (they must balance).")
                 su = lbo.sources_and_uses
                 su_df = pd.DataFrame(
@@ -534,7 +533,7 @@ with tab_lbo:
                     },
                     index=["Purchase EV / Debt", "Fees / Sponsor equity", "Total"],
                 )
-                st.dataframe(su_df, use_container_width=True)
+                st.table(su_df)
 
                 st.markdown(
                     "**Step 2 — Debt schedule with 100% cash sweep.**  \n"
@@ -560,7 +559,7 @@ with tab_lbo:
                     rows["Debt paydown"].append(fmt_money(y.debt_paydown))
                     rows["Ending debt"].append(fmt_money(y.ending_debt))
                     rows["Cash balance"].append(fmt_money(y.cash_balance))
-                st.dataframe(pd.DataFrame(rows, index=cols).T, use_container_width=True)
+                st.table(pd.DataFrame(rows, index=cols).T)
 
                 st.markdown(
                     f"**Step 3 — Exit & returns.**  \n"
@@ -580,7 +579,7 @@ with tab_lbo:
 
 st.divider()
 st.caption(
-    "⚠️ **Educational use only — not investment advice.** Built with Streamlit · data from "
+    "**Educational use only — not investment advice.** Built with Streamlit · data from "
     "Financial Modeling Prep · valuation engine is open and unit-tested. All outputs depend "
     "on the assumptions you choose and may rely on delayed or incomplete data."
 )

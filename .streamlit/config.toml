@@ -1,14 +1,13 @@
-# Polished dark theme for the Valuation Explainer.
+# Clean institutional light theme for the Valuation Explainer.
 # (Secrets live in the gitignored secrets.toml, not here.)
 
 [theme]
-base = "dark"
-primaryColor = "#5B8DEF"            # accent — buttons, sliders, links
-backgroundColor = "#0D1117"         # app background
-secondaryBackgroundColor = "#161C28" # cards, sidebar, inputs
-textColor = "#E6E9EF"
+base = "light"
+primaryColor = "#1e3a5f"             # single navy accent — headers, active states, key numbers
+backgroundColor = "#ffffff"          # app background
+secondaryBackgroundColor = "#f7f8fa" # sidebar, inputs, hairline panels
+textColor = "#1a1a2e"                # near-black text
 font = "sans serif"
 
 [server]
-# Keep reruns snappy for the interactive sliders.
 runOnSave = true
