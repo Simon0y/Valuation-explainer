@@ -32,7 +32,7 @@ from data.fmp_client import (
     FMPRateLimitError,
 )
 from data.fundamentals import fetch_financials, fetch_profile
-from data.peers import PeerComparison, build_peer_comparison
+from data.peers import PE_LABEL, PeerComparison, build_peer_comparison
 from engine.defaults import (
     default_dcf_assumptions,
     default_lbo_assumptions,
@@ -80,12 +80,20 @@ def load_financials(api_key: str, symbol: str, limit: int) -> CompanyFinancials:
     return fetch_financials(client, symbol, limit=limit)
 
 
-@st.cache_data(show_spinner=False)
+# Each peer costs 2 FMP calls (trailing P/E + revenue growth), so a tight cap keeps a single
+# load well under the free-tier budget. One load ≈ 1 (profile) + 2 (target) + 1 (peer
+# discovery) + 2×peers calls — i.e. ~20 calls at 8 peers, down from ~28 at the old 12.
+_MAX_PEERS = 8
+
+
+# Hard cache: a 24h TTL means repeated views of the same ticker (across reruns and tab
+# switches) cost ZERO further FMP calls — a few page views can't exhaust the daily quota.
+@st.cache_data(show_spinner=False, ttl=24 * 3600, max_entries=64)
 def load_peer_comparison(api_key: str, symbol: str) -> PeerComparison:
-    """Cached peer pull (target + peers with P/E, revenue growth, market cap)."""
+    """Cached peer pull (target + up to ``_MAX_PEERS`` peers with P/E, revenue growth, cap)."""
     client = FMPClient(api_key)
     profile = fetch_profile(client, symbol)
-    return build_peer_comparison(client, symbol, profile)
+    return build_peer_comparison(client, symbol, profile, max_peers=_MAX_PEERS)
 
 
 # --------------------------------------------------------------------------------------
@@ -719,17 +727,23 @@ _GROWTH_MIN, _GROWTH_MAX = -0.95, 5.0
 
 def _peer_plottable(p) -> bool:
     """A point is plottable only if P/E, revenue growth and market cap are all present and
-    within sane ranges — otherwise it's skipped (never fabricated or clamped onto the chart)."""
+    within sane ranges — otherwise it's skipped (never fabricated or clamped onto the chart).
+    Every field is read with a safe default so a malformed peer record can never raise."""
+    pe = getattr(p, "pe", None)
+    growth = getattr(p, "revenue_growth", None)
+    cap = getattr(p, "market_cap", None)
     return (
-        p.pe is not None and _PE_MIN < p.pe < _PE_MAX
-        and p.revenue_growth is not None and _GROWTH_MIN <= p.revenue_growth <= _GROWTH_MAX
-        and p.market_cap is not None and p.market_cap > 0
+        pe is not None and _PE_MIN < pe < _PE_MAX
+        and growth is not None and _GROWTH_MIN <= growth <= _GROWTH_MAX
+        and cap is not None and cap > 0
     )
 
 
 def render_peers_tab(api_key: str, fin: CompanyFinancials) -> None:
-    profile = fin.profile
-    sym = profile.symbol
+    """Render the Peers tab, failing soft at every step. A provider error, rate limit,
+    missing peer set, missing field, or any unexpected error shows a clean in-tab message —
+    it must NEVER raise and crash the rest of the app."""
+    sym = getattr(getattr(fin, "profile", None), "symbol", "") or "this company"
 
     st.subheader("Peers")
     st.caption(
@@ -741,17 +755,36 @@ def render_peers_tab(api_key: str, fin: CompanyFinancials) -> None:
     try:
         with st.spinner(f"Finding peers for {sym} and pulling their metrics…"):
             comp = load_peer_comparison(api_key, sym)
-    except (FMPAuthError, FMPPlanError, FMPRateLimitError, FMPNotFound, FMPError) as exc:
+    except FMPRateLimitError:
+        st.info("Peer data temporarily unavailable (provider rate limit) — try again later.")
+        return
+    except (FMPAuthError, FMPPlanError, FMPNotFound, FMPError) as exc:
         st.error(f"Couldn't load peers: {exc}")
         return
+    except Exception:  # noqa: BLE001 — last-resort guard so the load can never crash the app
+        st.warning("Peer data unavailable right now.")
+        return
 
-    points = comp.points
+    # Rendering is isolated so a surprise in the data shape stays contained to this tab.
+    try:
+        _render_peer_comparison(sym, comp)
+    except Exception:  # noqa: BLE001 — contain any rendering error to the Peers tab
+        st.warning("Peer data unavailable right now.")
+
+
+def _render_peer_comparison(sym: str, comp: PeerComparison) -> None:
+    # Read everything off `comp` defensively: a pickle-roundtripped or partial object must
+    # not be able to throw an AttributeError here (this tab is fail-soft end to end).
+    points = list(getattr(comp, "points", None) or [])
+    source = getattr(comp, "source", "none")
+    pe_label = getattr(comp, "pe_label", None) or PE_LABEL
+
     plottable = [p for p in points if _peer_plottable(p)]
-    target = next((p for p in plottable if p.is_target), None)
-    peers = [p for p in plottable if not p.is_target]
+    target = next((p for p in plottable if getattr(p, "is_target", False)), None)
+    peers = [p for p in plottable if not getattr(p, "is_target", False)]
     skipped = len(points) - len(plottable)
 
-    if comp.source == "none" or len(points) <= 1:
+    if source == "none" or len(points) <= 1:
         st.warning(
             f"FMP returned no peer set for **{sym}** on this plan. The relative-valuation "
             "chart needs peers; try a large-cap US ticker (e.g. AAPL, MSFT)."
@@ -766,18 +799,22 @@ def render_peers_tab(api_key: str, fin: CompanyFinancials) -> None:
         return
 
     # Plot — convert to display-ready dicts (decimals stay decimals; ui scales for the axis).
+    # Fields are read with safe defaults so a missing attribute can't raise.
     chart_points = [
         {
-            "symbol": p.symbol,
-            "pe": p.pe,
-            "growth": p.revenue_growth,
-            "market_cap": p.market_cap,
-            "cap_label": fmt_compact(p.market_cap),
-            "is_target": p.is_target,
+            "symbol": getattr(p, "symbol", "—"),
+            "pe": getattr(p, "pe", None),
+            "growth": getattr(p, "revenue_growth", None),
+            "market_cap": getattr(p, "market_cap", None),
+            "cap_label": fmt_compact(getattr(p, "market_cap", None)),
+            "is_target": bool(getattr(p, "is_target", False)),
         }
         for p in plottable
     ]
-    st.plotly_chart(ui.peer_bubble(chart_points, comp.pe_label), use_container_width=True)
+    try:
+        st.plotly_chart(ui.peer_bubble(chart_points, pe_label), use_container_width=True)
+    except Exception:  # noqa: BLE001 — a chart failure must not hide the data table below
+        st.warning("Couldn't draw the peer bubble chart; the data table below still applies.")
 
     # Graceful notes: sparse peers, the target itself missing, and how peers were sourced.
     if target is None:
@@ -792,7 +829,7 @@ def render_peers_tab(api_key: str, fin: CompanyFinancials) -> None:
         )
 
     src_label = {"stock-peers": "FMP stock-peers", "screener": "sector/industry screener"}.get(
-        comp.source, comp.source
+        source, source
     )
     note = f"Peers via **{src_label}**. P/E is **trailing (TTM)** — the free tier exposes no forward estimate."
     if skipped:
@@ -803,10 +840,13 @@ def render_peers_tab(api_key: str, fin: CompanyFinancials) -> None:
     rows = {"Trailing P/E": [], "Rev growth YoY": [], "Market cap": []}
     idx = []
     for p in points:
-        idx.append(f"▸ {p.symbol}" if p.is_target else p.symbol)
-        rows["Trailing P/E"].append("—" if p.pe is None else f"{p.pe:,.1f}")
-        rows["Rev growth YoY"].append("—" if p.revenue_growth is None else f"{p.revenue_growth:+.1%}")
-        rows["Market cap"].append(fmt_compact(p.market_cap))
+        psym = getattr(p, "symbol", "—")
+        pe = getattr(p, "pe", None)
+        growth = getattr(p, "revenue_growth", None)
+        idx.append(f"▸ {psym}" if getattr(p, "is_target", False) else psym)
+        rows["Trailing P/E"].append("—" if pe is None else f"{pe:,.1f}")
+        rows["Rev growth YoY"].append("—" if growth is None else f"{growth:+.1%}")
+        rows["Market cap"].append(fmt_compact(getattr(p, "market_cap", None)))
     with st.expander("Peer data table"):
         st.table(pd.DataFrame(rows, index=idx))
 
