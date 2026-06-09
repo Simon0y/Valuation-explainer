@@ -31,7 +31,8 @@ from data.fmp_client import (
     FMPPlanError,
     FMPRateLimitError,
 )
-from data.fundamentals import fetch_financials
+from data.fundamentals import fetch_financials, fetch_profile
+from data.peers import PeerComparison, build_peer_comparison
 from engine.defaults import (
     default_dcf_assumptions,
     default_lbo_assumptions,
@@ -77,6 +78,14 @@ def resolve_api_key() -> str | None:
 def load_financials(api_key: str, symbol: str, limit: int) -> CompanyFinancials:
     client = FMPClient(api_key)
     return fetch_financials(client, symbol, limit=limit)
+
+
+@st.cache_data(show_spinner=False)
+def load_peer_comparison(api_key: str, symbol: str) -> PeerComparison:
+    """Cached peer pull (target + peers with P/E, revenue growth, market cap)."""
+    client = FMPClient(api_key)
+    profile = fetch_profile(client, symbol)
+    return build_peer_comparison(client, symbol, profile)
 
 
 # --------------------------------------------------------------------------------------
@@ -702,16 +711,104 @@ def render_ai_insights_tab() -> None:
     )
 
 
-def render_peers_tab() -> None:
-    render_coming_soon(
-        "Peers",
-        "Put the company in context against comparable firms.",
-        [
-            "Comparable-company multiples table (EV/EBITDA, P/E, growth, margins).",
-            "Relative-valuation implied value/share vs the DCF.",
-            "Sector/industry positioning on growth and profitability.",
-        ],
+# P/E bounds that exclude loss-makers (≤0) and obvious garbage/outliers (huge multiples).
+_PE_MIN, _PE_MAX = 0.0, 250.0
+# Revenue-growth bounds that exclude impossible/garbage YoY figures.
+_GROWTH_MIN, _GROWTH_MAX = -0.95, 5.0
+
+
+def _peer_plottable(p) -> bool:
+    """A point is plottable only if P/E, revenue growth and market cap are all present and
+    within sane ranges — otherwise it's skipped (never fabricated or clamped onto the chart)."""
+    return (
+        p.pe is not None and _PE_MIN < p.pe < _PE_MAX
+        and p.revenue_growth is not None and _GROWTH_MIN <= p.revenue_growth <= _GROWTH_MAX
+        and p.market_cap is not None and p.market_cap > 0
     )
+
+
+def render_peers_tab(api_key: str, fin: CompanyFinancials) -> None:
+    profile = fin.profile
+    sym = profile.symbol
+
+    st.subheader("Peers")
+    st.caption(
+        "Relative valuation — each bubble is a company: **X = trailing P/E (TTM)**, "
+        "**Y = revenue growth (YoY)**, **bubble size = market cap**. "
+        f"The amber bubble is **{sym}**; peers are grey."
+    )
+
+    try:
+        with st.spinner(f"Finding peers for {sym} and pulling their metrics…"):
+            comp = load_peer_comparison(api_key, sym)
+    except (FMPAuthError, FMPPlanError, FMPRateLimitError, FMPNotFound, FMPError) as exc:
+        st.error(f"Couldn't load peers: {exc}")
+        return
+
+    points = comp.points
+    plottable = [p for p in points if _peer_plottable(p)]
+    target = next((p for p in plottable if p.is_target), None)
+    peers = [p for p in plottable if not p.is_target]
+    skipped = len(points) - len(plottable)
+
+    if comp.source == "none" or len(points) <= 1:
+        st.warning(
+            f"FMP returned no peer set for **{sym}** on this plan. The relative-valuation "
+            "chart needs peers; try a large-cap US ticker (e.g. AAPL, MSFT)."
+        )
+        return
+
+    if not plottable:
+        st.warning(
+            "None of the companies returned a usable P/E + revenue growth + market cap, so "
+            "there's nothing to plot. (Loss-makers and missing data are skipped, not faked.)"
+        )
+        return
+
+    # Plot — convert to display-ready dicts (decimals stay decimals; ui scales for the axis).
+    chart_points = [
+        {
+            "symbol": p.symbol,
+            "pe": p.pe,
+            "growth": p.revenue_growth,
+            "market_cap": p.market_cap,
+            "cap_label": fmt_compact(p.market_cap),
+            "is_target": p.is_target,
+        }
+        for p in plottable
+    ]
+    st.plotly_chart(ui.peer_bubble(chart_points, comp.pe_label), use_container_width=True)
+
+    # Graceful notes: sparse peers, the target itself missing, and how peers were sourced.
+    if target is None:
+        st.warning(
+            f"**{sym}** itself is missing a usable P/E or revenue growth, so it isn't on the "
+            "chart — only its peers are shown."
+        )
+    if len(peers) < 3:
+        st.info(
+            f"Only **{len(peers)}** peer(s) returned usable data — too few for a confident "
+            "comparison. Read the positioning as indicative, not definitive."
+        )
+
+    src_label = {"stock-peers": "FMP stock-peers", "screener": "sector/industry screener"}.get(
+        comp.source, comp.source
+    )
+    note = f"Peers via **{src_label}**. P/E is **trailing (TTM)** — the free tier exposes no forward estimate."
+    if skipped:
+        note += f" {skipped} compan{'y' if skipped == 1 else 'ies'} skipped for missing/garbage data."
+    st.caption(note)
+
+    # Compact data table (terminal-style), including rows skipped from the chart.
+    rows = {"Trailing P/E": [], "Rev growth YoY": [], "Market cap": []}
+    idx = []
+    for p in points:
+        idx.append(f"▸ {p.symbol}" if p.is_target else p.symbol)
+        rows["Trailing P/E"].append("—" if p.pe is None else f"{p.pe:,.1f}")
+        rows["Rev growth YoY"].append("—" if p.revenue_growth is None else f"{p.revenue_growth:+.1%}")
+        rows["Market cap"].append(fmt_compact(p.market_cap))
+    with st.expander("Peer data table"):
+        st.table(pd.DataFrame(rows, index=idx))
 
 
 # ======================================================================================
@@ -784,7 +881,7 @@ def main() -> None:
     with tab_ai:
         render_ai_insights_tab()
     with tab_peers:
-        render_peers_tab()
+        render_peers_tab(api_key, fin)
 
 
 main()

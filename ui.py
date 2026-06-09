@@ -263,3 +263,57 @@ def sensitivity_heatmap(
                    showgrid=False),
     )
     return fig
+
+
+# --------------------------------------------------------------------------------------
+# Peers bubble chart: relative valuation — X = P/E, Y = revenue growth YoY, size = mkt cap.
+# Target company in the amber accent (drawn on top); peers muted grey so it stands out.
+# `points` are display-ready dicts: {symbol, pe, growth (decimal), market_cap, cap_label,
+# is_target}. The caller filters out null/garbage rows before passing them in.
+# --------------------------------------------------------------------------------------
+def peer_bubble(points: list[dict], pe_label: str) -> go.Figure:
+    peers = [p for p in points if not p["is_target"]]
+    target = [p for p in points if p["is_target"]]
+
+    caps = [p["market_cap"] for p in points if p["market_cap"]]
+    maxcap = max(caps) if caps else 1.0
+    sizeref = 2.0 * maxcap / (62.0**2)  # ~62px largest bubble (Plotly area sizing)
+
+    def _trace(group, fill, line_c, text_c, name, opacity):
+        return go.Scatter(
+            x=[p["pe"] for p in group],
+            y=[p["growth"] * 100.0 for p in group],   # decimal → percent for the axis
+            mode="markers+text",
+            text=[p["symbol"] for p in group],
+            textposition="middle center",
+            textfont=dict(family=MONO.replace("'", ""), size=9, color=text_c),
+            customdata=[[p["cap_label"]] for p in group],
+            marker=dict(
+                size=[p["market_cap"] for p in group],
+                sizemode="area", sizeref=sizeref, sizemin=6,
+                color=fill, opacity=opacity, line=dict(width=1.2, color=line_c),
+            ),
+            name=name,
+            hovertemplate=(
+                "<b>%{text}</b><br>" + pe_label + ": %{x:.1f}×<br>"
+                "Rev growth YoY: %{y:+.1f}%<br>Market cap: %{customdata[0]}<extra></extra>"
+            ),
+        )
+
+    fig = go.Figure()
+    if peers:
+        fig.add_trace(_trace(peers, MUTED, "#9aa4b2", TEXT_BRIGHT, "Peers", 0.45))
+    if target:
+        fig.add_trace(_trace(target, ACCENT, TEXT_BRIGHT, BG, target[0]["symbol"], 0.95))
+
+    fig = _style(fig, height=460)
+    fig.update_layout(
+        showlegend=True,
+        legend=dict(orientation="h", y=1.12, x=0, font=dict(size=11, color=MUTED),
+                    bgcolor="rgba(0,0,0,0)"),
+    )
+    fig.update_xaxes(title_text=pe_label, title_font=dict(color=MUTED, size=11),
+                     ticksuffix="×", zeroline=False)
+    fig.update_yaxes(title_text="Revenue growth YoY", title_font=dict(color=MUTED, size=11),
+                     ticksuffix="%")
+    return fig
