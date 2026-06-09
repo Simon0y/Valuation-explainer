@@ -17,12 +17,15 @@ from content.glossary import get as glossary_get
 from engine.models import DCFResult, LBOResult
 from ui_theme import (
     ACCENT,
+    ACCENT_DEEP,
+    BG,
     BORDER,
     GREEN,
     GRID,
     MONO,
     MUTED,
     PANEL,
+    PANEL_ALT,
     RED,
     SANS,
     TEXT,
@@ -170,5 +173,93 @@ def lbo_debt_chart(result: LBOResult, currency: str) -> go.Figure:
         showlegend=True,
         legend=dict(orientation="h", y=1.14, x=0, font=dict(size=11, color=MUTED),
                     bgcolor="rgba(0,0,0,0)"),
+    )
+    return fig
+
+
+# --------------------------------------------------------------------------------------
+# DCF sensitivity heatmap: fair value / share across a WACC × terminal-growth grid.
+# `values` is rows=terminal growth, cols=WACC; cells where g∞ >= WACC are NaN (blank).
+# The caller supplies the base-case cell indices so we can outline it.
+# --------------------------------------------------------------------------------------
+def sensitivity_heatmap(
+    wacc_axis: list[float],
+    tg_axis: list[float],
+    values: list[list[float]],
+    base_col: int,
+    base_row: int,
+    currency: str,
+) -> go.Figure:
+    x_labels = [f"{w:.2%}" for w in wacc_axis]
+    y_labels = [f"{g:.2%}" for g in tg_axis]
+
+    # vmin/vmax over the valid (non-NaN) cells, for the colorscale + text contrast.
+    flat = [v for row in values for v in row if v == v]  # v == v filters out NaN
+    vmin = min(flat) if flat else 0.0
+    vmax = max(flat) if flat else 1.0
+    span = (vmax - vmin) or 1.0
+
+    # Dark panel (low) → amber (high) — stays within the app's terminal palette.
+    colorscale = [[0.0, PANEL_ALT], [0.5, ACCENT_DEEP], [1.0, ACCENT]]
+
+    fig = go.Figure(
+        go.Heatmap(
+            z=values,
+            x=x_labels,
+            y=y_labels,
+            colorscale=colorscale,
+            hoverongaps=False,
+            xgap=2,
+            ygap=2,
+            colorbar=dict(
+                title=dict(text=f"Value/share ({currency})", font=dict(color=MUTED, size=11)),
+                tickfont=dict(color=MUTED, size=10, family=MONO.replace("'", "")),
+                outlinewidth=0, thickness=12, len=0.9,
+            ),
+            hovertemplate="WACC %{x}<br>Terminal growth %{y}"
+                          "<br>Value/share: %{z:,.2f}<extra></extra>",
+        )
+    )
+
+    # Per-cell value annotations with contrast-aware text colour (light on dark cells,
+    # dark on bright amber cells). NaN cells get a muted dash to show they're intentional.
+    annotations = []
+    for r, row in enumerate(values):
+        for c, v in enumerate(row):
+            if v != v:  # NaN
+                annotations.append(dict(
+                    x=x_labels[c], y=y_labels[r], text="—", showarrow=False,
+                    font=dict(color=MUTED, size=11, family=MONO.replace("'", "")),
+                ))
+                continue
+            norm = (v - vmin) / span
+            txt_color = BG if norm > 0.55 else TEXT_BRIGHT
+            annotations.append(dict(
+                x=x_labels[c], y=y_labels[r], text=f"{v:,.2f}", showarrow=False,
+                font=dict(color=txt_color, size=10.5, family=MONO.replace("'", "")),
+            ))
+
+    # Outline the base-case cell (categorical axes index cells at 0,1,2,…).
+    base_outline = dict(
+        type="rect", xref="x", yref="y",
+        x0=base_col - 0.5, x1=base_col + 0.5,
+        y0=base_row - 0.5, y1=base_row + 0.5,
+        line=dict(color=TEXT_BRIGHT, width=2.5), fillcolor="rgba(0,0,0,0)", layer="above",
+    )
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor=SURFACE, plot_bgcolor=SURFACE,
+        font=dict(family=SANS.replace("'", ""), color=TEXT, size=12),
+        height=380, margin=dict(l=10, r=10, t=30, b=10),
+        annotations=annotations, shapes=[base_outline],
+        xaxis=dict(title=dict(text="WACC (discount rate)", font=dict(color=MUTED, size=11)),
+                   color=MUTED, tickfont=dict(family=MONO.replace("'", ""), size=10),
+                   showgrid=False, constrain="domain"),
+        # go.Heatmap places z row 0 at the bottom, so ascending terminal growth reads
+        # upward (higher growth → higher up), the natural orientation for the y-axis.
+        yaxis=dict(title=dict(text="Terminal growth (g∞)", font=dict(color=MUTED, size=11)),
+                   color=MUTED, tickfont=dict(family=MONO.replace("'", ""), size=10),
+                   showgrid=False),
     )
     return fig

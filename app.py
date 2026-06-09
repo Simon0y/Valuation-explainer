@@ -394,6 +394,9 @@ def _render_dcf(
 
     ui.term_row(["fcff", "wacc", "terminal_value", "ev", "net_debt"])
 
+    # ---- Sensitivity matrix (recomputes the same DCF across a WACC × g∞ grid) ----
+    render_sensitivity_matrix(fin, include_lt_inv, wacc_v, tg_v, growth_v, margin_v, cur)
+
     # ---- Step-by-step walkthrough ----
     with st.expander("Step-by-step walkthrough"):
         st.markdown(
@@ -461,6 +464,77 @@ def _render_dcf(
             ["capm", "beta", "erp", "nopat", "gordon_growth", "discount_factor"],
             label="More terms from these steps:",
         )
+
+
+# ---- Sensitivity matrix --------------------------------------------------------------
+# Grid geometry: WACC ±2pp over 7 steps (x), terminal growth ±1pp over 5 steps (y),
+# centered on the current sidebar values (odd step counts ⇒ the center cell is the base).
+SENS_WACC_HALF, SENS_WACC_STEPS = 0.02, 7
+SENS_TG_HALF, SENS_TG_STEPS = 0.01, 5
+
+
+def _linspace(center: float, half: float, steps: int) -> list[float]:
+    """Evenly spaced values on [center−half, center+half]. With an odd `steps`, the
+    middle element is exactly `center` (so the base-case cell matches the live DCF)."""
+    if steps == 1:
+        return [center]
+    step = (2.0 * half) / (steps - 1)
+    return [center - half + step * i for i in range(steps)]
+
+
+def _argmin_close(axis: list[float], target: float) -> int:
+    return min(range(len(axis)), key=lambda i: abs(axis[i] - target))
+
+
+def render_sensitivity_matrix(
+    fin: CompanyFinancials,
+    include_lt_inv: bool,
+    wacc_v: float,
+    tg_v: float,
+    growth_v: float,
+    margin_v: float,
+    cur: str,
+) -> None:
+    """Recompute fair value / share across a WACC × terminal-growth grid by calling the
+    EXISTING DCF engine per cell — only WACC and terminal growth vary; revenue growth,
+    EBIT margin, the net-debt toggle and everything else are held at the sidebar values.
+    Cells where g∞ ≥ WACC are blanked (NaN): Gordon growth is undefined there."""
+    wacc_axis = _linspace(wacc_v, SENS_WACC_HALF, SENS_WACC_STEPS)
+    tg_axis = _linspace(tg_v, SENS_TG_HALF, SENS_TG_STEPS)
+
+    # values[row=terminal growth][col=WACC]; NaN where the Gordon model is invalid.
+    nan = float("nan")
+    values: list[list[float]] = []
+    for g in tg_axis:
+        row: list[float] = []
+        for w in wacc_axis:
+            if g >= w:  # mirrors run_dcf's guard (wacc must exceed terminal growth)
+                row.append(nan)
+                continue
+            cell_base = default_dcf_assumptions(
+                fin, wacc=w, include_long_term_investments=include_lt_inv,
+                terminal_growth=g,
+            )
+            cell = replace(cell_base, revenue_growth=growth_v, ebit_margin=margin_v)
+            try:
+                row.append(run_dcf(cell).value_per_share)
+            except ValueError:
+                row.append(nan)
+        values.append(row)
+
+    base_col = _argmin_close(wacc_axis, wacc_v)
+    base_row = _argmin_close(tg_axis, tg_v)
+
+    st.markdown("**Sensitivity — fair value / share**")
+    st.caption(
+        "How the DCF value/share moves as WACC (columns) and terminal growth (rows) vary "
+        "around your sidebar inputs. The outlined cell is the base case; blank cells are "
+        "where terminal growth ≥ WACC, which the Gordon model can't value."
+    )
+    st.plotly_chart(
+        ui.sensitivity_heatmap(wacc_axis, tg_axis, values, base_col, base_row, cur),
+        use_container_width=True,
+    )
 
 
 # ----------------------------------------------------------------------------- LBO
