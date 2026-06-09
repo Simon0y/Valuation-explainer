@@ -11,16 +11,41 @@ documented sign conventions exactly as the API reports them (it does not flip si
 
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 from engine.models import CompanyFinancials, CompanyProfile, FinancialYear
-from data.fmp_client import FMPClient
+from data.fmp_client import FMPClient, FMPPlanError
 
 # Endpoint names are shared between stable and legacy; the client handles URL shape.
 EP_PROFILE = "profile"
 EP_INCOME = "income-statement"
 EP_CASHFLOW = "cash-flow-statement"
 EP_BALANCE = "balance-sheet-statement"
+
+# Common free-tier cap on the `limit` query parameter, used when the plan rejects a
+# larger request and the allowed maximum can't be parsed from the error message.
+_DEFAULT_LIMIT_FALLBACK = 5
+
+
+def _annual(client: FMPClient, endpoint: str, symbol: str, limit: int) -> list:
+    """Fetch an annual statement, retrying at a smaller limit if the plan caps it.
+
+    The free FMP tier rejects ``limit`` values above ~5 with a plan error like
+    *"the values for 'limit' must be between 0 and 5"*. Rather than fail, we parse the
+    allowed maximum from the message (falling back to 5) and retry once at that limit, so
+    callers transparently get as many years as the plan actually permits — never more, and
+    never padded.
+    """
+    try:
+        return client.get(endpoint, symbol, limit=limit, period="annual")
+    except FMPPlanError as exc:
+        match = re.search(r"between\s+0\s+and\s+(\d+)", str(exc))
+        allowed = int(match.group(1)) if match else _DEFAULT_LIMIT_FALLBACK
+        allowed = max(1, min(limit, allowed))
+        if allowed >= limit:
+            raise  # the error wasn't about the limit being too high
+        return client.get(endpoint, symbol, limit=allowed, period="annual")
 
 
 def _first(row: dict, *keys: str) -> Optional[Any]:
@@ -78,7 +103,7 @@ def _index_by_year(rows: list[dict]) -> dict[str, dict]:
 
 
 def fetch_financials(
-    client: FMPClient, symbol: str, limit: int = 5
+    client: FMPClient, symbol: str, limit: int = 10
 ) -> CompanyFinancials:
     """Fetch profile + up to ``limit`` years of statements and assemble the history.
 
@@ -88,19 +113,16 @@ def fetch_financials(
     """
     profile = fetch_profile(client, symbol)
 
-    income_rows = client.get(EP_INCOME, symbol, limit=limit, period="annual")
+    income_rows = _annual(client, EP_INCOME, symbol, limit)
     # Cash-flow and balance-sheet are best-effort: a limited plan may reject them, and we
-    # still want to show whatever the income statement gave us.
+    # still want to show whatever the income statement gave us. Each retries at the plan's
+    # allowed limit via _annual.
     try:
-        cashflow_by_year = _index_by_year(
-            client.get(EP_CASHFLOW, symbol, limit=limit, period="annual")
-        )
+        cashflow_by_year = _index_by_year(_annual(client, EP_CASHFLOW, symbol, limit))
     except Exception:
         cashflow_by_year = {}
     try:
-        balance_by_year = _index_by_year(
-            client.get(EP_BALANCE, symbol, limit=limit, period="annual")
-        )
+        balance_by_year = _index_by_year(_annual(client, EP_BALANCE, symbol, limit))
     except Exception:
         balance_by_year = {}
 

@@ -57,6 +57,11 @@ def _raise_for_status(resp: requests.Response, symbol: str) -> None:
             "FMP returned 403 — this endpoint or history depth is not available on your "
             "current plan. Try a different ticker or a smaller request."
         )
+    if status == 402:
+        # Payment Required — a plan limitation (e.g. the free tier caps the `limit`
+        # query parameter). Include the body so callers can parse the allowed maximum
+        # and retry at a smaller limit.
+        raise FMPPlanError(f"FMP plan limit (402): {resp.text[:200]}")
     if status == 429:
         raise FMPRateLimitError(
             "FMP rate limit hit (429). You've exceeded the calls allowed for your plan; "

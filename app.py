@@ -156,7 +156,14 @@ with st.sidebar:
             "(see `secrets.toml.example`) or set the `FMP_API_KEY` environment variable."
         )
     symbol = st.text_input("Ticker", value="AAPL", help="e.g. AAPL, MSFT, NVDA").strip().upper()
-    years_to_load = st.slider("Years of history", min_value=1, max_value=10, value=5)
+    years_to_load = st.slider(
+        "Years of history", min_value=1, max_value=10, value=10,
+        help=(
+            "Requests up to this many years of annual statements. The API may return "
+            "fewer (the free FMP tier often caps at ~5); only the years actually returned "
+            "are shown — never padded or fabricated."
+        ),
+    )
     go = st.button("Load company", type="primary", disabled=not api_key)
 
     st.divider()
@@ -253,6 +260,15 @@ if profile.description:
 # Key financials (consistency-fixed net debt)
 # ======================================================================================
 st.subheader("Key financials")
+n_years = len(fin.years)
+if n_years < years_to_load:
+    st.caption(
+        f"📅 Showing **{n_years}** year(s) — requested {years_to_load}, but the API "
+        "returned fewer (common on the free FMP tier). Only the years actually returned "
+        "are shown; nothing is padded or fabricated."
+    )
+else:
+    st.caption(f"📅 Showing **{n_years}** year(s) of annual history.")
 st.caption(
     f"Reporting currency: **{cur}**. Figures are exactly as reported by the API (absolute "
     "units, newest year first). Capex is shown **negative** (a cash outflow); Δ working "
