@@ -2,6 +2,7 @@
 # pillow is intentionally NOT pinned — it resolves transitively from streamlit and will
 # pull a 3.14-compatible wheel.
 streamlit==1.58.0
+numpy==2.4.6
 pandas==3.0.3
 plotly==6.8.0
 requests==2.34.2

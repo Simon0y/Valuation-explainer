@@ -317,3 +317,76 @@ def peer_bubble(points: list[dict], pe_label: str) -> go.Figure:
     fig.update_yaxes(title_text="Revenue growth YoY", title_font=dict(color=MUTED, size=11),
                      ticksuffix="%")
     return fig
+
+
+# --------------------------------------------------------------------------------------
+# Risk probability cone: median GBM path with shaded 5–95% and 25–75% bands fanning out
+# over the year from the current price. Amber palette; the present price is marked at t=0.
+# `times_years` and the band arrays come straight from engine.montecarlo (no math here).
+# --------------------------------------------------------------------------------------
+def risk_cone(
+    times_years,
+    bands: dict,
+    current_price: float,
+    currency: str,
+    var_price: float | None = None,
+) -> go.Figure:
+    months = [t * 12.0 for t in times_years]  # x-axis reads in months ahead (0 → 12)
+
+    def _band(lower, upper, fill, name):
+        # An upper trace then a filled-to-previous lower trace = a shaded ribbon.
+        return [
+            go.Scatter(
+                x=months, y=list(upper), mode="lines", line=dict(width=0),
+                hoverinfo="skip", showlegend=False, name=f"{name} upper",
+            ),
+            go.Scatter(
+                x=months, y=list(lower), mode="lines", line=dict(width=0),
+                fill="tonexty", fillcolor=fill, hoverinfo="skip", name=name,
+            ),
+        ]
+
+    fig = go.Figure()
+    # Outer 5–95% ribbon (faint amber), then inner 25–75% ribbon (deeper amber).
+    for tr in _band(bands["p5"], bands["p95"], "rgba(232,163,61,0.14)", "5–95% range"):
+        fig.add_trace(tr)
+    for tr in _band(bands["p25"], bands["p75"], "rgba(232,163,61,0.30)", "25–75% range"):
+        fig.add_trace(tr)
+
+    # Median path (amber line).
+    fig.add_trace(go.Scatter(
+        x=months, y=list(bands["p50"]), mode="lines",
+        line=dict(color=ACCENT, width=2.2), name="Median path",
+        hovertemplate="Month %{x:.0f}<br>Median: %{y:,.2f}<extra></extra>",
+    ))
+
+    # Current price: a horizontal reference line + a marked point at t=0.
+    fig.add_hline(y=current_price, line=dict(color=ACCENT_LINE, width=1, dash="dot"),
+                  annotation_text=f"Now {current_price:,.2f}",
+                  annotation_position="top left",
+                  annotation_font=dict(color=MUTED, size=10, family=MONO.replace("'", "")))
+    fig.add_trace(go.Scatter(
+        x=[0], y=[current_price], mode="markers",
+        marker=dict(color=ACCENT, size=9, line=dict(color=BG, width=1.5)),
+        name="Current price",
+        hovertemplate="Today<br>%{y:,.2f}<extra></extra>",
+    ))
+
+    # 95% VaR threshold price (dashed red) — the 1-year downside cutoff.
+    if var_price is not None:
+        fig.add_hline(y=var_price, line=dict(color=RED, width=1, dash="dash"),
+                      annotation_text=f"95% VaR {var_price:,.2f}",
+                      annotation_position="bottom left",
+                      annotation_font=dict(color=RED, size=10, family=MONO.replace("'", "")))
+
+    fig = _style(fig, height=420)
+    fig.update_layout(
+        showlegend=True,
+        legend=dict(orientation="h", y=1.12, x=0, font=dict(size=11, color=MUTED),
+                    bgcolor="rgba(0,0,0,0)"),
+    )
+    fig.update_xaxes(title_text="Months ahead", title_font=dict(color=MUTED, size=11),
+                     range=[0, 12], dtick=2, zeroline=False)
+    fig.update_yaxes(title_text=f"Simulated price ({currency})",
+                     title_font=dict(color=MUTED, size=11))
+    return fig

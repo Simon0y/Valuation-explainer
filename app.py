@@ -33,6 +33,7 @@ from data.fmp_client import (
 )
 from data.fundamentals import fetch_financials, fetch_profile
 from data.peers import PE_LABEL, PeerComparison, build_peer_comparison
+from data.prices import fetch_price_history
 from engine.defaults import (
     default_dcf_assumptions,
     default_lbo_assumptions,
@@ -41,6 +42,7 @@ from engine.defaults import (
 from engine.dcf import run_dcf
 from engine.lbo import run_lbo
 from engine.models import CompanyFinancials
+from engine.montecarlo import run_price_risk
 
 st.set_page_config(page_title="Valuation Explainer", page_icon="▪", layout="wide")
 ui_theme.inject_css()
@@ -94,6 +96,15 @@ def load_peer_comparison(api_key: str, symbol: str) -> PeerComparison:
     client = FMPClient(api_key)
     profile = fetch_profile(client, symbol)
     return build_peer_comparison(client, symbol, profile, max_peers=_MAX_PEERS)
+
+
+# Hard 24h cache: the Risk tab's ONE FMP dependency is this single price-history pull, so a
+# day of reruns/tab-switches costs at most one call per ticker. Returns closes oldest→newest.
+@st.cache_data(show_spinner=False, ttl=24 * 3600, max_entries=64)
+def load_price_history(api_key: str, symbol: str) -> list[float]:
+    """Cached daily close series (~3y) for the Monte Carlo price-risk engine."""
+    client = FMPClient(api_key)
+    return fetch_price_history(client, symbol)
 
 
 # --------------------------------------------------------------------------------------
@@ -695,15 +706,98 @@ def render_coming_soon(title: str, blurb: str, planned: list[str]) -> None:
         st.markdown(f"- {item}")
 
 
-def render_risk_tab() -> None:
-    render_coming_soon(
-        "Risk",
-        "Quantify the sensitivity and downside around the valuation you built.",
-        [
-            "WACC × terminal-growth sensitivity grid for the DCF value/share.",
-            "Tornado chart of which assumptions move the valuation most.",
-            "Leverage / interest-coverage and break-even stress on the LBO.",
-        ],
+def render_risk_tab(api_key: str, fin: CompanyFinancials) -> None:
+    """Render the Risk tab: a Monte Carlo (GBM) market-price-risk simulation.
+
+    Fails soft at every step — a rate limit, missing data, or any unexpected error shows a
+    clean in-tab message instead of crashing the app (same pattern as the Peers tab). This
+    is market-price risk from historical volatility, SEPARATE from the DCF valuation."""
+    profile = getattr(fin, "profile", None)
+    sym = getattr(profile, "symbol", "") or "this company"
+    currency = getattr(profile, "currency", "") or ""
+
+    st.subheader("Risk")
+    st.caption(
+        "Monte Carlo **price risk** — 10,000 simulated 1-year price paths via Geometric "
+        "Brownian Motion, with drift and volatility estimated from this stock's own daily "
+        "history. This is **market-price risk**, separate from the DCF fundamental value."
+    )
+
+    try:
+        with st.spinner(f"Loading price history for {sym}…"):
+            prices = load_price_history(api_key, sym)
+    except FMPRateLimitError:
+        st.info("Price data unavailable (provider rate limit) — try again later.")
+        return
+    except (FMPAuthError, FMPPlanError, FMPNotFound, FMPError):
+        st.warning("Price data unavailable for this ticker.")
+        return
+    except Exception:  # noqa: BLE001 — last-resort guard; the load can never crash the app
+        st.warning("Price data unavailable right now.")
+        return
+
+    if not prices or len(prices) < 30:
+        st.warning(
+            "Not enough price history to estimate volatility for a meaningful simulation "
+            "(need at least ~30 daily closes)."
+        )
+        return
+
+    try:
+        _render_price_risk(sym, currency, prices)
+    except Exception:  # noqa: BLE001 — contain any rendering/sim error to the Risk tab
+        st.warning("Couldn't run the price-risk simulation for this ticker.")
+
+
+def _render_price_risk(sym: str, currency: str, prices: list[float]) -> None:
+    res = run_price_risk(prices)  # current price defaults to the last close in the series
+
+    cur_lbl = f" {currency}" if currency and currency != "—" else ""
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Current price", f"{res.current_price:,.2f}{cur_lbl}")
+    with c2:
+        st.metric(
+            "95% VaR · 1-year",
+            f"−{res.var_pct:.1%}",
+            delta=f"to {res.var_price:,.2f}{cur_lbl}",
+            delta_color="off",
+        )
+    with c3:
+        st.metric(
+            "95% Expected Shortfall · 1-year",
+            f"−{res.es_pct:.1%}",
+            delta=f"avg {res.es_price:,.2f}{cur_lbl} in worst 5%",
+            delta_color="off",
+        )
+
+    st.plotly_chart(
+        ui.risk_cone(
+            res.times_years, res.bands, res.current_price, currency or "",
+            var_price=res.var_price,
+        ),
+        use_container_width=True,
+    )
+
+    # Plain-language reading of the two headline numbers.
+    st.markdown(
+        f"Over the next year, there's a **5% chance {sym} falls to "
+        f"{res.var_price:,.2f}{cur_lbl} or below** (a **{res.var_pct:.1%}** loss — the 95% "
+        f"VaR). *If* it lands in that worst-5% tail, the **average** outcome is "
+        f"{res.es_price:,.2f}{cur_lbl}, a **{res.es_pct:.1%}** loss (the Expected "
+        f"Shortfall, which by definition sits deeper in the tail than VaR)."
+    )
+
+    ann_vol = res.params.sigma
+    st.caption(
+        f"Estimated annualized volatility **{ann_vol:.1%}** (from {res.params.n_returns:,} "
+        f"daily log returns); {res.n_paths:,} GBM paths, 252 trading days, 95% confidence. "
+        "**Honest labelling:** this is market-price risk simulated from historical "
+        "volatility (Geometric Brownian Motion) — it is *separate* from the DCF fundamental "
+        "valuation and answers a different question (how the share *price* might move, not "
+        "what the business is worth). GBM assumes **lognormal returns and constant "
+        "volatility**, so it has no fat tails or volatility clustering and will understate "
+        "real-world extreme moves. Educational use only; not investment advice."
     )
 
 
@@ -917,7 +1011,7 @@ def main() -> None:
     with tab_valuation:
         render_valuation_tab(fin, include_lt_inv, wacc_result, dcf_ready)
     with tab_risk:
-        render_risk_tab()
+        render_risk_tab(api_key, fin)
     with tab_ai:
         render_ai_insights_tab()
     with tab_peers:
