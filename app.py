@@ -17,12 +17,14 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import replace
+from datetime import date
 
 import pandas as pd
 import streamlit as st
 
 import ui
 import ui_theme
+from content.report import ReportData, build_markdown, build_pdf
 from data.fmp_client import (
     FMPAuthError,
     FMPClient,
@@ -448,6 +450,18 @@ def _render_dcf(
     m2.metric(f"Enterprise value ({cur})", fmt_compact(dcf.enterprise_value))
     m3.metric(f"Equity value ({cur})", fmt_compact(dcf.equity_value))
 
+    # Snapshot the already-computed DCF for the Export feature (Stage 6). This only records
+    # values for packaging; it does not change the valuation or this tab's behavior.
+    st.session_state["_report_valuation"] = {
+        "value_per_share": dcf.value_per_share,
+        "upside": (dcf.value_per_share / profile.price - 1.0)
+        if (profile.price and profile.price > 0) else None,
+        "enterprise_value": dcf.enterprise_value,
+        "equity_value": dcf.equity_value,
+        "wacc": dcf.assumptions.wacc,
+        "terminal_growth": dcf.assumptions.terminal_growth,
+    }
+
     st.plotly_chart(ui.dcf_waterfall(dcf, cur), use_container_width=True)
 
     ui.term_row(["fcff", "wacc", "terminal_value", "ev", "net_debt"])
@@ -781,6 +795,20 @@ def render_risk_tab(api_key: str, fin: CompanyFinancials) -> None:
 
 def _render_price_risk(sym: str, currency: str, prices: list[float]) -> None:
     res = run_price_risk(prices)  # current price defaults to the last close in the series
+
+    # Snapshot the already-computed risk result for the Export feature (Stage 6).
+    st.session_state["_report_risk"] = {
+        "var_pct": res.var_pct,
+        "es_pct": res.es_pct,
+        "var_price": res.var_price,
+        "es_price": res.es_price,
+        "current_price": res.current_price,
+        "sigma": res.params.sigma,
+        "n_paths": res.n_paths,
+        "horizon_days": res.horizon_days,
+        "times": [float(t) for t in res.times_years],
+        "bands": {k: [float(x) for x in v] for k, v in res.bands.items()},
+    }
 
     cur_lbl = f" {currency}" if currency and currency != "—" else ""
     c1, c2, c3 = st.columns(3)
@@ -1131,6 +1159,18 @@ def _render_peer_comparison(sym: str, comp: PeerComparison) -> None:
         )
         return
 
+    # Snapshot a short peer summary for the Export feature (Stage 6).
+    _peer_pes = sorted(
+        getattr(pp, "pe", None) for pp in peers if getattr(pp, "pe", None)
+    )
+    _median_pe = _peer_pes[len(_peer_pes) // 2] if _peer_pes else None
+    st.session_state["_report_peers"] = {
+        "source": source,
+        "peer_count": len(peers),
+        "target_pe": getattr(target, "pe", None) if target else None,
+        "median_peer_pe": _median_pe,
+    }
+
     # Plot — convert to display-ready dicts (decimals stay decimals; ui scales for the axis).
     # Fields are read with safe defaults so a missing attribute can't raise.
     chart_points = [
@@ -1185,6 +1225,86 @@ def _render_peer_comparison(sym: str, comp: PeerComparison) -> None:
 
 
 # ======================================================================================
+# Stage 6 — Export Investment Report (packages already-computed session results only)
+# ======================================================================================
+def _collect_report_data(fin: CompanyFinancials) -> ReportData:
+    """Build a ReportData purely from session-state snapshots + the loaded financials.
+
+    No FMP/Gemini calls: valuation/risk/peers come from snapshots the tabs already wrote,
+    multiples are derived from the in-hand financials, and the AI thesis (if any) is read
+    from session state. Missing sections are simply left as None and skipped downstream."""
+    profile = fin.profile
+    sym = profile.symbol
+    thesis = st.session_state.get(f"_ai_thesis_{sym}")
+    return ReportData(
+        company_name=profile.name,
+        symbol=sym,
+        report_date=date.today().isoformat(),
+        currency=profile.currency or "",
+        current_price=profile.price,
+        valuation=st.session_state.get("_report_valuation"),
+        multiples=_market_multiples(fin),
+        peers=st.session_state.get("_report_peers"),
+        risk=st.session_state.get("_report_risk"),
+        ai_thesis=thesis,
+        ai_news_included=bool(st.session_state.get("_ai_news_included", False)),
+    )
+
+
+def _render_export_section(fin: CompanyFinancials) -> None:
+    """Render the 'Export Investment Report' download buttons (Markdown + PDF).
+
+    Markdown is the bulletproof primary; PDF is best-effort and, if it can't be built in
+    this environment, degrades to a disabled button rather than crashing the app."""
+    st.divider()
+    st.subheader("Export Investment Report")
+    st.caption(
+        "Package this session's computed results — DCF, multiples, peers, risk, and the AI "
+        "thesis (if generated) — into a downloadable report. No new data is fetched; only "
+        "sections you've already computed are included."
+    )
+
+    data = _collect_report_data(fin)
+    base = (fin.profile.symbol or "report").lower()
+
+    try:
+        md_bytes = build_markdown(data).encode("utf-8")
+    except Exception:  # noqa: BLE001 — markdown is meant to be bulletproof, but never crash
+        st.warning("Couldn't assemble the report from this session.")
+        return
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button(
+            "⬇ Download report (Markdown)",
+            data=md_bytes,
+            file_name=f"{base}_investment_report.md",
+            mime="text/markdown",
+            type="primary",
+            use_container_width=True,
+            key="dl_report_md",
+        )
+    with c2:
+        try:
+            pdf_bytes = build_pdf(data)
+        except Exception:  # noqa: BLE001 — PDF is secondary; fall back to Markdown only
+            st.button(
+                "PDF unavailable", disabled=True, use_container_width=True,
+                key="dl_report_pdf_disabled",
+            )
+            st.caption("PDF export isn't available in this environment — use Markdown.")
+        else:
+            st.download_button(
+                "⬇ Download report (PDF)",
+                data=pdf_bytes,
+                file_name=f"{base}_investment_report.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                key="dl_report_pdf",
+            )
+
+
+# ======================================================================================
 # Main flow
 # ======================================================================================
 def main() -> None:
@@ -1235,6 +1355,9 @@ def main() -> None:
     if st.session_state.get("_loaded_symbol") != symbol:
         for k in SLIDER_KEYS:
             st.session_state.pop(k, None)
+        # Drop stale export snapshots so a new company never exports the old one's results.
+        for k in ("_report_valuation", "_report_risk", "_report_peers"):
+            st.session_state.pop(k, None)
         st.session_state["_loaded_symbol"] = symbol
 
     # WACC underpins the DCF sliders + DCF tab (may be None for ticker w/o market cap).
@@ -1255,6 +1378,10 @@ def main() -> None:
         render_ai_insights_tab(api_key, fin, wacc_result, include_lt_inv)
     with tab_peers:
         render_peers_tab(api_key, fin)
+
+    # Export packages whatever the tabs above computed THIS run (read from session state).
+    # It is rendered last so every snapshot is fresh, and makes no new FMP/Gemini calls.
+    _render_export_section(fin)
 
 
 main()
