@@ -254,6 +254,7 @@ def build_pdf(data: ReportData) -> bytes:
     bytes, skipping any optional piece (e.g. the chart) that fails."""
     try:
         from fpdf import FPDF
+        from fpdf.enums import XPos, YPos
     except ImportError as exc:  # pragma: no cover - exercised only without the dep
         raise RuntimeError("PDF export requires the 'fpdf2' package.") from exc
 
@@ -261,29 +262,39 @@ def build_pdf(data: ReportData) -> bytes:
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
-    width = pdf.epw  # effective page width
+    width = pdf.epw           # effective printable width = page width − left/right margins
+    label_w = min(60.0, width * 0.42)  # label column; value gets the rest of the width
+
+    # NOTE: fpdf2's multi_cell leaves the cursor at the cell's OWN left edge, not the page
+    # margin, so consecutive rows would drift right and clip. Every helper below therefore
+    # resets x to the left margin first, and ends each row with new_x=LMARGIN/new_y=NEXT so
+    # the next row starts cleanly at the left margin on a fresh line — always within margins.
+    def _line(text: str, h: float, size: float, bold: bool) -> None:
+        pdf.set_x(pdf.l_margin)
+        pdf.set_font("Helvetica", "B" if bold else "", size)
+        pdf.multi_cell(width, h, _lat1(text), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
     def h1(text: str) -> None:
-        pdf.set_font("Helvetica", "B", 16)
-        pdf.multi_cell(width, 8, _lat1(text))
+        _line(text, 8, 16, True)
         pdf.ln(1)
 
     def h2(text: str) -> None:
         pdf.ln(2)
-        pdf.set_font("Helvetica", "B", 12)
         pdf.set_text_color(180, 120, 30)
-        pdf.multi_cell(width, 7, _lat1(text))
+        _line(text, 7, 12, True)
         pdf.set_text_color(0, 0, 0)
 
     def body(text: str, bold: bool = False) -> None:
-        pdf.set_font("Helvetica", "B" if bold else "", 10)
-        pdf.multi_cell(width, 5.2, _lat1(text))
+        _line(text, 5.2, 10, bold)
 
     def kv(label: str, value: str) -> None:
+        # Label left-aligned at the left margin; value wraps in the remaining width and
+        # returns to the left margin on the next line. Nothing extends past the right margin.
+        pdf.set_x(pdf.l_margin)
         pdf.set_font("Helvetica", "B", 10)
-        pdf.cell(60, 5.6, _lat1(label), border=0)
+        pdf.cell(label_w, 5.6, _lat1(label), new_x=XPos.RIGHT, new_y=YPos.TOP)
         pdf.set_font("Helvetica", "", 10)
-        pdf.multi_cell(width - 60, 5.6, _lat1(value))
+        pdf.multi_cell(width - label_w, 5.6, _lat1(value), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
     # ---- Header ----
     h1(f"Investment Report — {data.company_name} ({data.symbol})")
