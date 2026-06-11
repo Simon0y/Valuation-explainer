@@ -32,8 +32,16 @@ from data.fmp_client import (
     FMPRateLimitError,
 )
 from data.fundamentals import fetch_financials, fetch_profile
+from data.news import fetch_recent_headlines
 from data.peers import PE_LABEL, PeerComparison, build_peer_comparison
 from data.prices import fetch_price_history
+from ai_thesis import (
+    AIError,
+    AIKeyError,
+    AIRateLimitError,
+    ThesisContext,
+    generate_ai_thesis,
+)
 from engine.defaults import (
     default_dcf_assumptions,
     default_lbo_assumptions,
@@ -76,6 +84,19 @@ def resolve_api_key() -> str | None:
     return _read_dotenv().get("FMP_API_KEY")
 
 
+def resolve_gemini_key() -> str | None:
+    """Resolve the Gemini API key: st.secrets -> env var -> .env. Never hardcoded; the
+    real key lives only in the gitignored secrets file / environment."""
+    try:
+        if "GEMINI_API_KEY" in st.secrets:
+            return st.secrets["GEMINI_API_KEY"]
+    except Exception:
+        pass
+    if os.environ.get("GEMINI_API_KEY"):
+        return os.environ["GEMINI_API_KEY"]
+    return _read_dotenv().get("GEMINI_API_KEY")
+
+
 @st.cache_data(show_spinner=False)
 def load_financials(api_key: str, symbol: str, limit: int) -> CompanyFinancials:
     client = FMPClient(api_key)
@@ -105,6 +126,15 @@ def load_price_history(api_key: str, symbol: str) -> list[float]:
     """Cached daily close series (~3y) for the Monte Carlo price-risk engine."""
     client = FMPClient(api_key)
     return fetch_price_history(client, symbol)
+
+
+# News is optional flavour for the AI thesis; cache it hard so a day of reruns/regenerations
+# costs at most one extra FMP call. Returns [] on any provider error (fetcher is fail-soft).
+@st.cache_data(show_spinner=False, ttl=24 * 3600, max_entries=64)
+def load_recent_headlines(api_key: str, symbol: str) -> list[str]:
+    """Cached recent headlines for ``symbol`` (best-effort; [] if unavailable)."""
+    client = FMPClient(api_key)
+    return fetch_recent_headlines(client, symbol, limit=5)
 
 
 # --------------------------------------------------------------------------------------
@@ -801,15 +831,224 @@ def _render_price_risk(sym: str, currency: str, prices: list[float]) -> None:
     )
 
 
-def render_ai_insights_tab() -> None:
-    render_coming_soon(
-        "AI Insights",
-        "Plain-language commentary on what the numbers imply — grounded in the data shown.",
-        [
-            "Narrative summary of the valuation and its key drivers.",
-            "Flags where assumptions diverge sharply from the company's history.",
-            "Suggested questions to pressure-test the thesis.",
-        ],
+# Cap generations per session so a stuck reload loop can't burn the free Gemini quota.
+_AI_MAX_GENERATIONS = 10
+
+
+def _compute_dcf_result(fin: CompanyFinancials, include_lt_inv: bool, wacc_result):
+    """Recompute the DCF from the current sidebar slider state, or None if unavailable.
+
+    Mirrors the assumption-building in `_render_dcf` so the AI thesis is grounded in the
+    SAME numbers the user sees on the Valuation tab — without re-rendering anything. Returns
+    None (never raises) if WACC/sliders/data aren't ready for a DCF."""
+    if wacc_result is None:
+        return None
+    keys = ("dcf_wacc", "dcf_tg", "dcf_growth", "dcf_margin")
+    if not all(k in st.session_state for k in keys):
+        return None
+    try:
+        base = default_dcf_assumptions(
+            fin, wacc=st.session_state["dcf_wacc"],
+            include_long_term_investments=include_lt_inv,
+            terminal_growth=st.session_state["dcf_tg"],
+        )
+        assumptions = replace(
+            base,
+            revenue_growth=st.session_state["dcf_growth"],
+            ebit_margin=st.session_state["dcf_margin"],
+        )
+        return run_dcf(assumptions)
+    except Exception:  # noqa: BLE001 — a DCF that won't compute just means no DCF context
+        return None
+
+
+def _market_multiples(fin: CompanyFinancials) -> dict[str, float]:
+    """Trailing market multiples derived from data already in hand (NO extra FMP calls).
+
+    Computed from the profile (market cap, price) and the latest fiscal year, so a missing
+    input simply omits that multiple rather than fabricating it."""
+    multiples: dict[str, float] = {}
+    profile = getattr(fin, "profile", None)
+    latest = fin.latest
+    if profile is None or latest is None:
+        return multiples
+
+    mcap = profile.market_cap
+    # Net income = pre-tax income − tax expense (both as reported).
+    net_income = None
+    if latest.income_before_tax is not None and latest.income_tax_expense is not None:
+        net_income = latest.income_before_tax - latest.income_tax_expense
+
+    if mcap and net_income and net_income > 0:
+        multiples["Trailing P/E"] = mcap / net_income
+
+    net_debt = latest.derived_net_debt
+    if mcap and net_debt is not None:
+        ev = mcap + net_debt
+        if latest.ebitda and latest.ebitda > 0:
+            multiples["EV/EBITDA"] = ev / latest.ebitda
+        if latest.revenue and latest.revenue > 0:
+            multiples["EV/Sales"] = ev / latest.revenue
+    return multiples
+
+
+def _build_thesis_context(
+    api_key: str, fin: CompanyFinancials, wacc_result, include_lt_inv: bool
+) -> tuple[ThesisContext, bool]:
+    """Assemble the grounded context for the AI thesis. Returns (context, news_attempted).
+
+    News is best-effort: a provider error yields no headlines and the thesis is generated
+    from the numbers alone (the prompt notes news wasn't included)."""
+    profile = fin.profile
+    dcf = _compute_dcf_result(fin, include_lt_inv, wacc_result)
+
+    value_per_share = enterprise_value = equity_value = None
+    wacc = terminal_growth = revenue_growth = ebit_margin = gap = None
+    if dcf is not None:
+        value_per_share = dcf.value_per_share
+        enterprise_value = dcf.enterprise_value
+        equity_value = dcf.equity_value
+        wacc = dcf.assumptions.wacc
+        terminal_growth = dcf.assumptions.terminal_growth
+        revenue_growth = dcf.assumptions.revenue_growth
+        ebit_margin = dcf.assumptions.ebit_margin
+        if profile.price and profile.price > 0:
+            gap = value_per_share / profile.price - 1.0
+
+    # Best-effort headlines (fail-soft; [] if FMP is unavailable).
+    headlines: list[str] = []
+    try:
+        headlines = load_recent_headlines(api_key, profile.symbol)
+    except Exception:  # noqa: BLE001 — news is optional and must never break the thesis
+        headlines = []
+
+    ctx = ThesisContext(
+        company_name=profile.name,
+        symbol=profile.symbol,
+        currency=profile.currency or "",
+        sector=profile.sector,
+        industry=profile.industry,
+        value_per_share=value_per_share,
+        market_price=profile.price,
+        gap_vs_market=gap,
+        enterprise_value=enterprise_value,
+        equity_value=equity_value,
+        wacc=wacc,
+        terminal_growth=terminal_growth,
+        revenue_growth=revenue_growth,
+        ebit_margin=ebit_margin,
+        multiples=_market_multiples(fin),
+        headlines=headlines,
+        news_included=bool(headlines),
+    )
+    return ctx, True
+
+
+def render_ai_insights_tab(
+    api_key: str, fin: CompanyFinancials, wacc_result, include_lt_inv: bool
+) -> None:
+    """AI Insights tab: a Gemini-generated Bull / Bear / Risk thesis grounded in the DCF
+    numbers and multiples. Fails soft — a missing key, rate limit, or any error shows a
+    clean message instead of crashing. Does NOT touch the engine or valuation math."""
+    sym = getattr(getattr(fin, "profile", None), "symbol", "") or "this company"
+
+    st.subheader("AI Insights")
+    st.caption(
+        "An AI-generated investment thesis — **Bull Case · Bear Case · Risk Factors** — "
+        "grounded in this company's DCF value, its gap versus the market price, and trading "
+        "multiples. Generated by Google Gemini."
+    )
+
+    gemini_key = resolve_gemini_key()
+    if not gemini_key:
+        st.info(
+            "**Add a Gemini API key to enable this.** Put `GEMINI_API_KEY = \"…\"` in "
+            "`.streamlit/secrets.toml` (gitignored) or set the `GEMINI_API_KEY` environment "
+            "variable. Get a free key at https://aistudio.google.com/apikey."
+        )
+        return
+
+    used = st.session_state.get("_ai_gen_count", 0)
+    remaining = _AI_MAX_GENERATIONS - used
+    store_key = f"_ai_thesis_{sym}"
+
+    btn_label = "Regenerate thesis" if store_key in st.session_state else "Generate AI thesis"
+    clicked = st.button(
+        btn_label, type="primary", key="gen_ai_thesis", disabled=remaining <= 0
+    )
+    if remaining <= 0:
+        st.warning(
+            f"Generation limit for this session reached ({_AI_MAX_GENERATIONS}). "
+            "Reload the app to start a new session."
+        )
+
+    if clicked:
+        ctx, _ = _build_thesis_context(api_key, fin, wacc_result, include_lt_inv)
+        try:
+            with st.spinner("Generating thesis with Gemini…"):
+                thesis = generate_ai_thesis(ctx, gemini_key)
+            st.session_state[store_key] = thesis
+            st.session_state["_ai_news_included"] = ctx.news_included
+            st.session_state["_ai_gen_count"] = used + 1
+        except AIKeyError:
+            st.info("Add a Gemini API key to enable this.")
+            return
+        except AIRateLimitError:
+            st.warning("AI temporarily unavailable, try again. (Gemini rate limit hit.)")
+            return
+        except AIError as exc:
+            st.error(f"Couldn't generate the thesis: {exc}")
+            return
+        except Exception:  # noqa: BLE001 — last-resort guard; never crash the app
+            st.warning("AI temporarily unavailable, try again.")
+            return
+
+    thesis = st.session_state.get(store_key)
+    if not thesis:
+        st.caption("Click **Generate AI thesis** to produce a grounded Bull / Bear / Risk report.")
+        return
+
+    _render_ai_thesis(thesis, st.session_state.get("_ai_news_included", False))
+
+
+def _render_ai_thesis(thesis: str, news_included: bool) -> None:
+    """Render the thesis as a 'premium report' — three separated sections, dark/amber."""
+    # Split the model's markdown on its level-2 headings so each section is its own panel.
+    sections: list[tuple[str, str]] = []
+    current_title: str | None = None
+    current_lines: list[str] = []
+    for line in thesis.splitlines():
+        if line.strip().startswith("## "):
+            if current_title is not None:
+                sections.append((current_title, "\n".join(current_lines).strip()))
+            current_title = line.strip()[3:].strip()
+            current_lines = []
+        else:
+            current_lines.append(line)
+    if current_title is not None:
+        sections.append((current_title, "\n".join(current_lines).strip()))
+
+    if not sections:
+        # Model didn't use headings as asked — show the raw text rather than nothing.
+        st.markdown(thesis)
+    else:
+        for title, body in sections:
+            st.markdown(f"#### {title}")
+            st.markdown(body or "_(no content)_")
+            st.divider()
+
+    note = (
+        "Generated by Google Gemini, grounded in the DCF valuation and multiples shown in "
+        "this app. "
+    )
+    note += (
+        "Recent news headlines were included." if news_included
+        else "News headlines were not available, so this thesis is based on the valuation "
+             "numbers alone."
+    )
+    st.caption(
+        f"⚠️ **AI-generated; educational use only — not investment advice.** {note} "
+        "AI output can be wrong or out of date; verify independently."
     )
 
 
@@ -1013,7 +1252,7 @@ def main() -> None:
     with tab_risk:
         render_risk_tab(api_key, fin)
     with tab_ai:
-        render_ai_insights_tab()
+        render_ai_insights_tab(api_key, fin, wacc_result, include_lt_inv)
     with tab_peers:
         render_peers_tab(api_key, fin)
 
