@@ -19,9 +19,15 @@ that field rather than failing the whole tab. Missing values are filtered out by
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
-from data.fmp_client import FMPClient, FMPError
+from data.fmp_client import (
+    FMPClient,
+    FMPError,
+    FMPNotFound,
+    FMPPlanError,
+    FMPRateLimitError,
+)
 from engine.models import CompanyProfile
 
 EP_PEERS = "stock-peers"
@@ -31,6 +37,27 @@ EP_GROWTH = "financial-growth"
 
 # Trailing because the free tier has no forward-estimate endpoint we can trust.
 PE_LABEL = "Trailing P/E (TTM)"
+
+# Why a field came back empty — kept per-field so the UI can tell an honest "M of N" story
+# instead of lumping every absence under "missing data". The free tier serves fundamentals
+# only for a whitelist of symbols (others 402 → ``plan_restricted``); the daily quota trips
+# a 429 (``rate_limited``); the symbol genuinely has no value (``missing``); anything else
+# is ``error``. ``ok`` means we got a real number.
+STATUS_OK = "ok"
+STATUS_MISSING = "missing"            # endpoint answered but the field was null/absent
+STATUS_PLAN = "plan_restricted"       # HTTP 402/403 — not on this (free) plan for this symbol
+STATUS_RATE_LIMIT = "rate_limited"    # HTTP 429 — daily/minute quota exhausted
+STATUS_ERROR = "error"                # network / unexpected provider error
+
+
+@dataclass(frozen=True)
+class PeerMetrics:
+    """The two per-symbol metrics the chart needs, each with why it's missing (if it is)."""
+
+    pe: Optional[float]
+    revenue_growth: Optional[float]
+    pe_status: str = STATUS_OK
+    growth_status: str = STATUS_OK
 
 
 @dataclass(frozen=True)
@@ -43,6 +70,8 @@ class PeerPoint:
     revenue_growth: Optional[float]  # latest fiscal-year YoY revenue growth, decimal
     market_cap: Optional[float]
     is_target: bool = False
+    pe_status: str = STATUS_OK       # why pe is None, if it is (see STATUS_* above)
+    growth_status: str = STATUS_OK   # why revenue_growth is None, if it is
 
 
 @dataclass(frozen=True)
@@ -71,21 +100,48 @@ def _first(row: dict, *keys: str) -> Optional[Any]:
     return None
 
 
-def _trailing_pe(client: FMPClient, symbol: str) -> Optional[float]:
-    try:
-        rows = client.get(EP_RATIOS_TTM, symbol)
-    except FMPError:
-        return None
-    return _num(_first(rows[0], "priceToEarningsRatioTTM", "peRatioTTM"))
+def _status_of(exc: FMPError) -> str:
+    """Map a typed FMP error to a STATUS_* so the UI can name the real reason."""
+    if isinstance(exc, FMPRateLimitError):
+        return STATUS_RATE_LIMIT
+    if isinstance(exc, FMPPlanError):      # 402/403 — symbol not on this plan
+        return STATUS_PLAN
+    if isinstance(exc, FMPNotFound):
+        return STATUS_MISSING
+    return STATUS_ERROR
 
 
-def _revenue_growth_yoy(client: FMPClient, symbol: str) -> Optional[float]:
+def _fetch_field(
+    client: FMPClient, endpoint: str, symbol: str, *keys: str, **extra
+) -> tuple[Optional[float], str]:
+    """Fetch one numeric field, returning ``(value, status)``.
+
+    ``try_legacy=False``: the legacy retry is dead weight (always 403) and only burns quota,
+    so per-peer pulls skip it — keeping a full peer set inside the free-tier call budget.
+    """
     try:
-        rows = client.get(EP_GROWTH, symbol, limit=1)
-    except FMPError:
-        return None
+        rows = client.get(endpoint, symbol, try_legacy=False, **extra)
+    except FMPError as exc:
+        return None, _status_of(exc)
+    value = _num(_first(rows[0], *keys))
+    return value, (STATUS_OK if value is not None else STATUS_MISSING)
+
+
+def fetch_peer_metrics(client: FMPClient, symbol: str) -> PeerMetrics:
+    """Pull trailing P/E and YoY revenue growth for one symbol, with per-field status.
+
+    Two FMP calls per symbol (``ratios-ttm`` + ``financial-growth``). Designed to be wrapped
+    in ``st.cache_data`` by the UI so a peer shared across tickers (e.g. GOOGL under both
+    AAPL and META) is fetched once, not once per parent — stretching the daily quota.
+    """
+    pe, pe_status = _fetch_field(
+        client, EP_RATIOS_TTM, symbol, "priceToEarningsRatioTTM", "peRatioTTM"
+    )
     # financial-growth returns newest-first; the latest fiscal year is row[0].
-    return _num(_first(rows[0], "revenueGrowth"))
+    growth, growth_status = _fetch_field(client, EP_GROWTH, symbol, "revenueGrowth", limit=1)
+    return PeerMetrics(
+        pe=pe, revenue_growth=growth, pe_status=pe_status, growth_status=growth_status
+    )
 
 
 def _discover_peers(
@@ -141,34 +197,48 @@ def _discover_peers(
 
 
 def build_peer_comparison(
-    client: FMPClient, symbol: str, profile: CompanyProfile, max_peers: int = 12
+    client: FMPClient,
+    symbol: str,
+    profile: CompanyProfile,
+    max_peers: int = 12,
+    metric_fetcher: Optional[Callable[[str], PeerMetrics]] = None,
 ) -> PeerComparison:
     """Assemble the target + up to ``max_peers`` peers with P/E, revenue growth, market cap.
 
     The target's market cap comes from its profile; peers' caps come from the discovery
-    payload (with no fabrication if absent). P/E and revenue growth are fetched per symbol.
+    payload (with no fabrication if absent). P/E and revenue growth are fetched per symbol
+    via ``metric_fetcher`` — the UI injects an ``st.cache_data``-wrapped one so repeated and
+    shared peers don't re-spend the daily quota; the default fetches directly.
     """
+    fetch = metric_fetcher or (lambda s: fetch_peer_metrics(client, s))
+
+    tgt_metrics = fetch(symbol.upper())
     target = PeerPoint(
         symbol=symbol.upper(),
         name=profile.name,
-        pe=_trailing_pe(client, symbol),
-        revenue_growth=_revenue_growth_yoy(client, symbol),
+        pe=tgt_metrics.pe,
+        revenue_growth=tgt_metrics.revenue_growth,
         market_cap=profile.market_cap,
         is_target=True,
+        pe_status=tgt_metrics.pe_status,
+        growth_status=tgt_metrics.growth_status,
     )
 
     peer_syms, source = _discover_peers(client, symbol, profile, max_peers)
 
     points: list[PeerPoint] = [target]
     for psym, mcap, pname in peer_syms:
+        m = fetch(psym)
         points.append(
             PeerPoint(
                 symbol=psym,
                 name=pname,
-                pe=_trailing_pe(client, psym),
-                revenue_growth=_revenue_growth_yoy(client, psym),
+                pe=m.pe,
+                revenue_growth=m.revenue_growth,
                 market_cap=mcap,
                 is_target=False,
+                pe_status=m.pe_status,
+                growth_status=m.growth_status,
             )
         )
 

@@ -14,8 +14,10 @@ set of tabs — Overview · Valuation · Risk · AI Insights · Peers. Each tab 
 
 from __future__ import annotations
 
+import logging
 import os
 import re
+from collections import Counter
 from dataclasses import replace
 from datetime import date
 
@@ -35,7 +37,16 @@ from data.fmp_client import (
 )
 from data.fundamentals import fetch_financials, fetch_profile
 from data.news import fetch_recent_headlines
-from data.peers import PE_LABEL, PeerComparison, build_peer_comparison
+from data.peers import (
+    PE_LABEL,
+    STATUS_OK,
+    STATUS_PLAN,
+    STATUS_RATE_LIMIT,
+    PeerComparison,
+    PeerMetrics,
+    build_peer_comparison,
+    fetch_peer_metrics,
+)
 from data.prices import fetch_price_history
 from ai_thesis import (
     AIError,
@@ -113,12 +124,25 @@ _MAX_PEERS = 8
 
 # Hard cache: a 24h TTL means repeated views of the same ticker (across reruns and tab
 # switches) cost ZERO further FMP calls — a few page views can't exhaust the daily quota.
+# Per-symbol metric cache, keyed by the symbol ITSELF (not the parent ticker). A peer that
+# recurs across tickers — GOOGL is a peer of both AAPL and META — is then fetched once and
+# reused, so its 2 FMP calls aren't re-spent per parent. 256 entries comfortably covers the
+# union of peers seen in a session, stretching the free-tier daily quota.
+@st.cache_data(show_spinner=False, ttl=24 * 3600, max_entries=256)
+def load_peer_metrics(api_key: str, symbol: str) -> PeerMetrics:
+    """Cached trailing-P/E + revenue-growth pull for ONE symbol (target or peer)."""
+    return fetch_peer_metrics(FMPClient(api_key), symbol)
+
+
 @st.cache_data(show_spinner=False, ttl=24 * 3600, max_entries=64)
 def load_peer_comparison(api_key: str, symbol: str) -> PeerComparison:
     """Cached peer pull (target + up to ``_MAX_PEERS`` peers with P/E, revenue growth, cap)."""
     client = FMPClient(api_key)
     profile = fetch_profile(client, symbol)
-    return build_peer_comparison(client, symbol, profile, max_peers=_MAX_PEERS)
+    return build_peer_comparison(
+        client, symbol, profile, max_peers=_MAX_PEERS,
+        metric_fetcher=lambda s: load_peer_metrics(api_key, s),
+    )
 
 
 # Hard 24h cache: the Risk tab's ONE FMP dependency is this single price-history pull, so a
@@ -1086,18 +1110,54 @@ _PE_MIN, _PE_MAX = 0.0, 250.0
 _GROWTH_MIN, _GROWTH_MAX = -0.95, 5.0
 
 
-def _peer_plottable(p) -> bool:
-    """A point is plottable only if P/E, revenue growth and market cap are all present and
-    within sane ranges — otherwise it's skipped (never fabricated or clamped onto the chart).
-    Every field is read with a safe default so a malformed peer record can never raise."""
+logger = logging.getLogger(__name__)
+
+# Drop reasons, in priority order. A provider-side reason (rate limit / not on plan) is
+# reported ahead of a value-side one so the caption blames the true cause, not a symptom.
+_DROP_RATE_LIMITED = "rate-limited"          # FMP 429 mid-pull — quota exhausted
+_DROP_NOT_ON_PLAN = "not on free plan"       # FMP 402/403 — symbol not served on this tier
+_DROP_NO_PE = "missing P/E"                  # endpoint answered but no usable trailing P/E
+_DROP_NO_GROWTH = "missing revenue growth"
+_DROP_NO_CAP = "missing market cap"
+
+
+def _peer_drop_reason(p) -> str | None:
+    """Why this point is NOT plottable, or None if it is. A point is plotted only when P/E,
+    revenue growth and market cap are all present and in-range — never fabricated or clamped.
+
+    Each field carries a fetch status (set in the data layer), so a value that's absent
+    because FMP rate-limited (429) or doesn't serve the symbol on this plan (402) is named
+    as such instead of being lumped under generic "missing data". Every field is read with a
+    safe default so a malformed record can't raise."""
     pe = getattr(p, "pe", None)
     growth = getattr(p, "revenue_growth", None)
     cap = getattr(p, "market_cap", None)
-    return (
-        pe is not None and _PE_MIN < pe < _PE_MAX
-        and growth is not None and _GROWTH_MIN <= growth <= _GROWTH_MAX
-        and cap is not None and cap > 0
-    )
+    pe_status = getattr(p, "pe_status", STATUS_OK)
+    growth_status = getattr(p, "growth_status", STATUS_OK)
+
+    # Provider-side causes first — they explain BOTH missing fields at once and are the real
+    # story for off-whitelist peers / an exhausted quota.
+    if STATUS_RATE_LIMIT in (pe_status, growth_status):
+        return _DROP_RATE_LIMITED
+    if STATUS_PLAN in (pe_status, growth_status):
+        return _DROP_NOT_ON_PLAN
+
+    if pe is None or not (_PE_MIN < pe < _PE_MAX):
+        return _DROP_NO_PE
+    if growth is None or not (_GROWTH_MIN <= growth <= _GROWTH_MAX):
+        return _DROP_NO_GROWTH
+    if cap is None or not (cap > 0):
+        return _DROP_NO_CAP
+    return None
+
+
+def _peer_plottable(p) -> bool:
+    return _peer_drop_reason(p) is None
+
+
+def _summarize_drops(reasons: list[str]) -> str:
+    """Turn a list of per-peer drop reasons into a compact 'a; b; c' tally, most common first."""
+    return "; ".join(f"{reason} ×{n}" for reason, n in Counter(reasons).most_common())
 
 
 def render_peers_tab(api_key: str, fin: CompanyFinancials) -> None:
@@ -1143,7 +1203,20 @@ def _render_peer_comparison(sym: str, comp: PeerComparison) -> None:
     plottable = [p for p in points if _peer_plottable(p)]
     target = next((p for p in plottable if getattr(p, "is_target", False)), None)
     peers = [p for p in plottable if not getattr(p, "is_target", False)]
-    skipped = len(points) - len(plottable)
+
+    # Diagnose dropped PEERS (the target is reported separately): how many were discovered,
+    # how many made the chart, and why each one didn't. Log it and surface a count caption so
+    # a sparse chart reads as "the data isn't on this plan", not "the app is broken".
+    all_peers = [p for p in points if not getattr(p, "is_target", False)]
+    dropped = [(getattr(p, "symbol", "—"), _peer_drop_reason(p)) for p in all_peers]
+    dropped = [(s, r) for s, r in dropped if r is not None]
+    n_discovered, n_plotted, n_dropped = len(all_peers), len(peers), len(dropped)
+    drop_summary = _summarize_drops([r for _, r in dropped])
+    logger.info(
+        "Peers[%s] source=%s discovered=%d plotted=%d dropped=%d (%s)",
+        sym, source, n_discovered, n_plotted, n_dropped,
+        "; ".join(f"{s}: {r}" for s, r in dropped) or "none",
+    )
 
     if source == "none" or len(points) <= 1:
         st.warning(
@@ -1201,12 +1274,22 @@ def _render_peer_comparison(sym: str, comp: PeerComparison) -> None:
             "comparison. Read the positioning as indicative, not definitive."
         )
 
+    # Count note: "Showing M of N peers (K dropped: reasons)" — the honest headline so a
+    # thin chart is self-explaining. Mirrors the logged diagnosis exactly.
+    count_note = f"Showing **{n_plotted} of {n_discovered}** peers"
+    if n_dropped:
+        count_note += f" ({n_dropped} dropped: {drop_summary})"
+    st.caption(count_note + ".")
+    if any(r == _DROP_RATE_LIMITED for _, r in dropped):
+        st.info(
+            "Some peers were dropped because FMP hit its **rate limit (429)** partway through "
+            "the pull. Metrics are cached for 24h, so re-running shortly should recover them."
+        )
+
     src_label = {"stock-peers": "FMP stock-peers", "screener": "sector/industry screener"}.get(
         source, source
     )
     note = f"Peers via **{src_label}**. P/E is **trailing (TTM)** — the free tier exposes no forward estimate."
-    if skipped:
-        note += f" {skipped} compan{'y' if skipped == 1 else 'ies'} skipped for missing/garbage data."
     st.caption(note)
 
     # Compact data table (terminal-style), including rows skipped from the chart.

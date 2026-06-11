@@ -111,11 +111,18 @@ class FMPClient:
         except ValueError as exc:
             raise FMPError("FMP returned a non-JSON response.") from exc
 
-    def get(self, endpoint: str, symbol: str, **extra_params) -> list:
-        """Fetch ``endpoint`` for ``symbol``, trying stable then legacy.
+    def get(self, endpoint: str, symbol: str, try_legacy: bool = True, **extra_params) -> list:
+        """Fetch ``endpoint`` for ``symbol``, trying stable then (optionally) legacy.
 
         FMP also sometimes returns a 200 with an ``{"Error Message": ...}`` body for an
         unknown ticker or a plan restriction; we detect that shape and raise too.
+
+        ``try_legacy=False`` skips the legacy ``/api/v3`` retry on a stable plan/not-found
+        error. Legacy is fully retired (it now returns 403 "no longer supported" for every
+        request), so the retry can never succeed — it only burns one more call against the
+        daily/rate quota. Hot loops that fan out one request per symbol (e.g. the per-peer
+        metric pull) pass ``False`` so a wall of off-plan symbols doesn't double the calls
+        and trip the 429 rate limit partway through the set.
 
         Returns the decoded JSON list (statement endpoints return a list of period rows;
         `profile` returns a single-element list).
@@ -130,7 +137,8 @@ class FMPClient:
             return self._unwrap(data, symbol)
         except (FMPNotFound, FMPPlanError):
             # Fall through to legacy — stable may not expose this endpoint on this plan.
-            pass
+            if not try_legacy:
+                raise
 
         # 2) Legacy /api/v3: /endpoint/AAPL?apikey=...
         legacy_url = f"{LEGACY_BASE}/{endpoint}/{symbol}"
