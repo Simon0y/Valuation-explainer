@@ -112,6 +112,38 @@ def test_pdf_minimal_report():
     assert bytes(pdf[:5]) == b"%PDF-"
 
 
+def test_trailing_pe_single_source_no_conflict():
+    # Multiples carry the fundamentals-derived P/E (38.2x); the peer pull carries the FMP
+    # TTM P/E (35.0x). The report must reconcile to ONE value — the peer/TTM source — so the
+    # same company never shows two different trailing P/Es.
+    data = ReportData(
+        company_name="Conflict Co", symbol="CFL",
+        multiples={"Trailing P/E": 38.2, "EV/EBITDA": 19.1},
+        peers={"source": "stock-peers", "peer_count": 5,
+               "target_pe": 35.0, "median_peer_pe": 28.0},
+    )
+    # Reconciled in-memory: both sections reference the same number.
+    assert data.multiples["Trailing P/E"] == 35.0
+
+    md = build_markdown(data)
+    # Exactly one trailing-P/E value appears for the company in the rendered report.
+    assert "38.2x" not in md
+    assert md.count("35.0x") == 2  # once in Key Multiples, once in Peer Comparison
+
+
+def test_trailing_pe_fallback_when_no_peers():
+    # No peer P/E available → Key Multiples keeps its fundamentals figure, and there is no
+    # peer section to contradict it.
+    data = ReportData(
+        company_name="Solo Co", symbol="SOLO",
+        multiples={"Trailing P/E": 30.0},
+    )
+    assert data.multiples["Trailing P/E"] == 30.0
+    md = build_markdown(data)
+    assert "30.0x" in md
+    assert "## Peer Comparison" not in md
+
+
 def test_markdown_handles_overvalued_direction():
     data = ReportData(
         company_name="Y", symbol="Y",

@@ -60,6 +60,17 @@ class ReportData:
     ai_thesis: Optional[str] = None
     ai_news_included: bool = False
 
+    def __post_init__(self) -> None:
+        # Single source of truth for the company's trailing P/E. The Peer Comparison shows
+        # the target's P/E beside the peer median — both FMP TTM (priceToEarningsRatioTTM) —
+        # so the comparison is apples-to-apples. When that value exists, force the Key
+        # Multiples "Trailing P/E" to the exact same number so the company never displays two
+        # different P/E values across sections. (Absent a peer P/E, Key Multiples keeps its
+        # fundamentals-derived fallback, and there is no peer section to disagree with.)
+        target_pe = (self.peers or {}).get("target_pe")
+        if target_pe is not None and self.multiples is not None:
+            self.multiples["Trailing P/E"] = target_pe
+
 
 # --------------------------------------------------------------------------------------
 # Formatting helpers (display only)

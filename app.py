@@ -1236,6 +1236,10 @@ def _collect_report_data(fin: CompanyFinancials) -> ReportData:
     profile = fin.profile
     sym = profile.symbol
     thesis = st.session_state.get(f"_ai_thesis_{sym}")
+
+    # ReportData enforces a single source of truth for the company's trailing P/E across the
+    # Key Multiples and Peer Comparison sections (see ReportData.__post_init__), so the same
+    # company never shows two different P/E values in the report.
     return ReportData(
         company_name=profile.name,
         symbol=sym,
