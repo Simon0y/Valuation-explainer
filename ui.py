@@ -2,9 +2,10 @@
 This is UI code (it imports Streamlit/plotly) — it contains NO finance math and is kept
 separate from the pure `engine/` package.
 
-Visual language lives in `ui_theme.py` (the terminal skin + shared palette). The charts
-below import that palette so the plots match the page: dark surfaces, an amber accent,
-green/red reserved strictly for positive/negative deltas, and monospaced tabular figures.
+Visual language lives in `ui_theme.py` (the light institutional skin + shared palette). The
+charts below import that palette so the plots match the page: white surfaces, a single muted
+navy accent, green/red reserved strictly for positive/negative deltas, and tabular sans-serif
+figures.
 """
 
 from __future__ import annotations
@@ -22,20 +23,19 @@ from ui_theme import (
     BORDER,
     GREEN,
     GRID,
-    MONO,
     MUTED,
+    NUM,
     PANEL,
-    PANEL_ALT,
     RED,
     SANS,
     TEXT,
     TEXT_BRIGHT,
 )
 
-# Chart-local aliases onto the shared terminal palette.
-SURFACE = PANEL          # chart paper/plot background (tile surface)
-ACCENT_LINE = "#7d8794"  # subordinate secondary line (muted, kept below the accent bars)
-INK = TEXT_BRIGHT        # bright figures on dark
+# Chart-local aliases onto the shared institutional palette.
+SURFACE = PANEL          # chart paper/plot background (white tile surface)
+ACCENT_LINE = "#94a3b8"  # subordinate secondary line (muted slate, below the accent bars)
+INK = TEXT_BRIGHT        # near-black figures on white
 HAIRLINE = BORDER        # connectors / axis lines
 
 
@@ -60,11 +60,11 @@ def term_row(keys: list[str], label: str = "Key terms — click any to learn mor
 
 
 # --------------------------------------------------------------------------------------
-# Plotly styling — dark terminal surface, amber accent, thin gridlines, clean fonts
+# Plotly styling — white surface, single navy accent, muted gridlines, clean sans fonts
 # --------------------------------------------------------------------------------------
 def _style(fig: go.Figure, height: int = 360) -> go.Figure:
     fig.update_layout(
-        template="plotly_dark",
+        template="plotly_white",
         paper_bgcolor=SURFACE,
         plot_bgcolor=SURFACE,
         font=dict(family=SANS.replace("'", ""), color=TEXT, size=12),
@@ -72,13 +72,13 @@ def _style(fig: go.Figure, height: int = 360) -> go.Figure:
         margin=dict(l=10, r=10, t=28, b=10),
         showlegend=False,
         hoverlabel=dict(bgcolor=SURFACE, bordercolor=HAIRLINE, font_size=12,
-                        font_family=MONO.replace("'", "")),
+                        font_family=NUM.replace("'", "")),
     )
     fig.update_xaxes(showgrid=False, color=MUTED, linecolor=HAIRLINE, ticks="outside",
                      tickcolor=HAIRLINE)
     fig.update_yaxes(showgrid=True, gridcolor=GRID, gridwidth=1, zeroline=True,
                      zerolinecolor=HAIRLINE, color=MUTED,
-                     tickfont=dict(family=MONO.replace("'", "")))
+                     tickfont=dict(family=NUM.replace("'", "")))
     return fig
 
 
@@ -93,7 +93,7 @@ def _fmt_compact(value: float) -> str:
 
 # --------------------------------------------------------------------------------------
 # DCF waterfall: forecast PV -> + terminal PV -> = EV -> - net debt -> = equity
-# (increases green, decreases red — terminal convention; totals amber)
+# (increases green, decreases red — accounting convention; totals navy)
 # --------------------------------------------------------------------------------------
 def dcf_waterfall(result: DCFResult, currency: str) -> go.Figure:
     x = [
@@ -126,7 +126,7 @@ def dcf_waterfall(result: DCFResult, currency: str) -> go.Figure:
             y=y,
             text=text,
             textposition="outside",
-            textfont=dict(family=MONO.replace("'", ""), color=INK, size=11),
+            textfont=dict(family=NUM.replace("'", ""), color=INK, size=11),
             connector=dict(line=dict(color=HAIRLINE, width=1)),
             increasing=dict(marker=dict(color=GREEN)),
             decreasing=dict(marker=dict(color=RED)),
@@ -138,7 +138,7 @@ def dcf_waterfall(result: DCFResult, currency: str) -> go.Figure:
 
 
 # --------------------------------------------------------------------------------------
-# LBO debt-paydown chart: ending debt by year (amber bars) with EBITDA (subordinate line)
+# LBO debt-paydown chart: ending debt by year (navy bars) with EBITDA (subordinate line)
 # --------------------------------------------------------------------------------------
 def lbo_debt_chart(result: LBOResult, currency: str) -> go.Figure:
     labels = ["Entry"] + [f"Year {y.year}" for y in result.schedule]
@@ -151,7 +151,7 @@ def lbo_debt_chart(result: LBOResult, currency: str) -> go.Figure:
             x=labels, y=debt, name="Net debt outstanding",
             marker=dict(color=ACCENT), width=0.6,
             text=[_fmt_compact(d) for d in debt], textposition="outside",
-            textfont=dict(family=MONO.replace("'", ""), color=INK, size=10),
+            textfont=dict(family=NUM.replace("'", ""), color=INK, size=10),
             hovertemplate="%{x}<br>Debt: %{y:,.0f}<extra></extra>",
         ),
         secondary_y=False,
@@ -199,8 +199,8 @@ def sensitivity_heatmap(
     vmax = max(flat) if flat else 1.0
     span = (vmax - vmin) or 1.0
 
-    # Dark panel (low) → amber (high) — stays within the app's terminal palette.
-    colorscale = [[0.0, PANEL_ALT], [0.5, ACCENT_DEEP], [1.0, ACCENT]]
+    # Light (low) → muted navy (high) — single-accent sequential ramp, monotone in lightness.
+    colorscale = [[0.0, "#eef2f7"], [0.5, "#6f8caa"], [1.0, ACCENT]]
 
     fig = go.Figure(
         go.Heatmap(
@@ -213,7 +213,7 @@ def sensitivity_heatmap(
             ygap=2,
             colorbar=dict(
                 title=dict(text=f"Value/share ({currency})", font=dict(color=MUTED, size=11)),
-                tickfont=dict(color=MUTED, size=10, family=MONO.replace("'", "")),
+                tickfont=dict(color=MUTED, size=10, family=NUM.replace("'", "")),
                 outlinewidth=0, thickness=12, len=0.9,
             ),
             hovertemplate="WACC %{x}<br>Terminal growth %{y}"
@@ -222,21 +222,21 @@ def sensitivity_heatmap(
     )
 
     # Per-cell value annotations with contrast-aware text colour (light on dark cells,
-    # dark on bright amber cells). NaN cells get a muted dash to show they're intentional.
+    # dark on light cells). NaN cells get a muted dash to show they're intentional.
     annotations = []
     for r, row in enumerate(values):
         for c, v in enumerate(row):
             if v != v:  # NaN
                 annotations.append(dict(
                     x=x_labels[c], y=y_labels[r], text="—", showarrow=False,
-                    font=dict(color=MUTED, size=11, family=MONO.replace("'", "")),
+                    font=dict(color=MUTED, size=11, family=NUM.replace("'", "")),
                 ))
                 continue
             norm = (v - vmin) / span
             txt_color = BG if norm > 0.55 else TEXT_BRIGHT
             annotations.append(dict(
                 x=x_labels[c], y=y_labels[r], text=f"{v:,.2f}", showarrow=False,
-                font=dict(color=txt_color, size=10.5, family=MONO.replace("'", "")),
+                font=dict(color=txt_color, size=10.5, family=NUM.replace("'", "")),
             ))
 
     # Outline the base-case cell (categorical axes index cells at 0,1,2,…).
@@ -248,18 +248,18 @@ def sensitivity_heatmap(
     )
 
     fig.update_layout(
-        template="plotly_dark",
+        template="plotly_white",
         paper_bgcolor=SURFACE, plot_bgcolor=SURFACE,
         font=dict(family=SANS.replace("'", ""), color=TEXT, size=12),
         height=380, margin=dict(l=10, r=10, t=30, b=10),
         annotations=annotations, shapes=[base_outline],
         xaxis=dict(title=dict(text="WACC (discount rate)", font=dict(color=MUTED, size=11)),
-                   color=MUTED, tickfont=dict(family=MONO.replace("'", ""), size=10),
+                   color=MUTED, tickfont=dict(family=NUM.replace("'", ""), size=10),
                    showgrid=False, constrain="domain"),
         # go.Heatmap places z row 0 at the bottom, so ascending terminal growth reads
         # upward (higher growth → higher up), the natural orientation for the y-axis.
         yaxis=dict(title=dict(text="Terminal growth (g∞)", font=dict(color=MUTED, size=11)),
-                   color=MUTED, tickfont=dict(family=MONO.replace("'", ""), size=10),
+                   color=MUTED, tickfont=dict(family=NUM.replace("'", ""), size=10),
                    showgrid=False),
     )
     return fig
@@ -267,7 +267,7 @@ def sensitivity_heatmap(
 
 # --------------------------------------------------------------------------------------
 # Peers bubble chart: relative valuation — X = P/E, Y = revenue growth YoY, size = mkt cap.
-# Target company in the amber accent (drawn on top); peers muted grey so it stands out.
+# Target company in the navy accent (drawn on top); peers muted grey so it stands out.
 # `points` are display-ready dicts: {symbol, pe, growth (decimal), market_cap, cap_label,
 # is_target}. The caller filters out null/garbage rows before passing them in.
 # --------------------------------------------------------------------------------------
@@ -286,7 +286,7 @@ def peer_bubble(points: list[dict], pe_label: str) -> go.Figure:
             mode="markers+text",
             text=[p["symbol"] for p in group],
             textposition="middle center",
-            textfont=dict(family=MONO.replace("'", ""), size=9, color=text_c),
+            textfont=dict(family=NUM.replace("'", ""), size=9, color=text_c),
             customdata=[[p["cap_label"]] for p in group],
             marker=dict(
                 size=[p["market_cap"] for p in group],
@@ -347,13 +347,13 @@ def risk_cone(
         ]
 
     fig = go.Figure()
-    # Outer 5–95% ribbon (faint amber), then inner 25–75% ribbon (deeper amber).
-    for tr in _band(bands["p5"], bands["p95"], "rgba(232,163,61,0.14)", "5–95% range"):
+    # Outer 5–95% ribbon (faint navy), then inner 25–75% ribbon (deeper navy).
+    for tr in _band(bands["p5"], bands["p95"], "rgba(30,58,95,0.10)", "5–95% range"):
         fig.add_trace(tr)
-    for tr in _band(bands["p25"], bands["p75"], "rgba(232,163,61,0.30)", "25–75% range"):
+    for tr in _band(bands["p25"], bands["p75"], "rgba(30,58,95,0.22)", "25–75% range"):
         fig.add_trace(tr)
 
-    # Median path (amber line).
+    # Median path (navy line).
     fig.add_trace(go.Scatter(
         x=months, y=list(bands["p50"]), mode="lines",
         line=dict(color=ACCENT, width=2.2), name="Median path",
@@ -364,7 +364,7 @@ def risk_cone(
     fig.add_hline(y=current_price, line=dict(color=ACCENT_LINE, width=1, dash="dot"),
                   annotation_text=f"Now {current_price:,.2f}",
                   annotation_position="top left",
-                  annotation_font=dict(color=MUTED, size=10, family=MONO.replace("'", "")))
+                  annotation_font=dict(color=MUTED, size=10, family=NUM.replace("'", "")))
     fig.add_trace(go.Scatter(
         x=[0], y=[current_price], mode="markers",
         marker=dict(color=ACCENT, size=9, line=dict(color=BG, width=1.5)),
@@ -377,7 +377,7 @@ def risk_cone(
         fig.add_hline(y=var_price, line=dict(color=RED, width=1, dash="dash"),
                       annotation_text=f"95% VaR {var_price:,.2f}",
                       annotation_position="bottom left",
-                      annotation_font=dict(color=RED, size=10, family=MONO.replace("'", "")))
+                      annotation_font=dict(color=RED, size=10, family=NUM.replace("'", "")))
 
     fig = _style(fig, height=420)
     fig.update_layout(

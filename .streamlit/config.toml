@@ -1,12 +1,13 @@
-# Dark institutional "terminal" theme for the Valuation Explainer.
+# Light institutional theme for the Valuation Explainer — clean, restrained, asset-manager
+# inspired (NOT a dark terminal). Single muted-navy accent on white / off-white.
 # (Secrets live in the gitignored secrets.toml, not here.)
 
 [theme]
-base = "dark"
-primaryColor = "#e8a33d"             # single amber accent — headers, active states, key numbers
-backgroundColor = "#0a0e14"          # app background — near-black
-secondaryBackgroundColor = "#11161f" # sidebar, inputs, tile panels
-textColor = "#c9d3df"                # primary text
+base = "light"
+primaryColor = "#1e3a5f"             # single muted-navy accent — active states, links, key totals
+backgroundColor = "#ffffff"          # app background — white
+secondaryBackgroundColor = "#f7f8fa" # sidebar, inputs, tile panels — off-white
+textColor = "#1a1f29"                # primary text — near-black
 font = "sans serif"
 
 [server]
