@@ -230,7 +230,7 @@ def render_sidebar_setup(api_key: str | None) -> tuple[str, int, bool, bool]:
             .upper()
         )
         years_to_load = st.slider(
-            "Years of history", min_value=1, max_value=10, value=10,
+            "Years of history", min_value=1, max_value=10, value=5,
             help=(
                 "Requests up to this many years of annual statements. The API may return "
                 "fewer (the free FMP tier often caps at ~5); only the years actually returned "
@@ -1075,7 +1075,7 @@ def _render_ai_thesis(thesis: str, news_included: bool) -> None:
              "numbers alone."
     )
     st.caption(
-        f"⚠️ **AI-generated; educational use only — not investment advice.** {note} "
+        f"**AI-generated; educational use only — not investment advice.** {note} "
         "AI output can be wrong or out of date; verify independently."
     )
 
@@ -1280,7 +1280,7 @@ def _render_export_section(fin: CompanyFinancials) -> None:
     c1, c2 = st.columns(2)
     with c1:
         st.download_button(
-            "⬇ Download report (Markdown)",
+            "Download report (Markdown)",
             data=md_bytes,
             file_name=f"{base}_investment_report.md",
             mime="text/markdown",
@@ -1299,7 +1299,7 @@ def _render_export_section(fin: CompanyFinancials) -> None:
             st.caption("PDF export isn't available in this environment — use Markdown.")
         else:
             st.download_button(
-                "⬇ Download report (PDF)",
+                "Download report (PDF)",
                 data=pdf_bytes,
                 file_name=f"{base}_investment_report.pdf",
                 mime="application/pdf",

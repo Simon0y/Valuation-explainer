@@ -2,9 +2,10 @@
 
 This module owns the *visual language* only — a clean, restrained, asset-manager-inspired
 skin (white / off-white surfaces, near-black text, hairline-bordered flat cards, a single
-muted-navy accent reserved for active states, links and headline numbers, and tabular
-sans-serif figures). It contains NO finance math and NO layout logic; it just exposes the
-shared palette and one `inject_css()` entry point.
+muted-navy accent reserved for active states, links and headline numbers, and a serif
+(Times New Roman) typeface throughout with right-aligned tabular figures). It contains NO
+finance math and NO layout logic; it just exposes the shared palette and one `inject_css()`
+entry point.
 
 Charts (in `ui.py`) import the palette below so the plots match the page.
 """
@@ -30,9 +31,10 @@ GREEN = "#1f7a4d"         # positive delta only (muted)
 RED = "#b3261e"           # negative delta only (muted)
 GRID = "#eef0f3"          # faint chart gridlines
 
-# Numbers use the same grotesque sans with tabular figures (no monospace "terminal" feel).
-SANS = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-NUM = SANS  # chart number labels share the sans; HTML numbers get tabular-nums via CSS
+# One serif typeface throughout (Times New Roman) — a classic, institutional document look.
+# Times New Roman is a system font, so no web-font import is needed.
+SERIF = "'Times New Roman', Georgia, serif"
+NUM = SERIF  # chart number labels share the serif; HTML numbers get tabular-nums via CSS
 
 
 def inject_css() -> None:
@@ -40,24 +42,33 @@ def inject_css() -> None:
     st.markdown(
         f"""
         <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-
-        /* ---- Base ---- */
+        /* ---- Base: Times New Roman serif throughout, comfortable reading measure ---- */
         .stApp {{ background: {BG}; }}
-        html, body, .stApp, [class*="css"] {{
-            font-family: {SANS};
+        /* Set the serif at the root + on emotion-class wrappers so it inherits everywhere. */
+        html, body, .stApp, [class*="css"], [class*="st-"] {{
+            font-family: {SERIF};
             color: {TEXT};
         }}
-        body {{ font-feature-settings: "tnum" 1, "lnum" 1; }}
-        .block-container {{ padding-top: 2.6rem; padding-bottom: 3.5rem; max-width: 1240px; }}
+        html, body, .stApp {{ font-size: 16px; }}
+        body {{ font-feature-settings: "tnum" 1, "lnum" 1; line-height: 1.55; }}
+        /* Streamlit sets an explicit (sans) heading font with high specificity; override it. */
+        .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6 {{
+            font-family: {SERIF} !important;
+        }}
+        /* Keep Material icon glyphs on their ligature font — never let the serif leak in,
+           or icons render as raw text (e.g. "keyboard_double_arrow_right"). */
+        [data-testid="stIconMaterial"] {{
+            font-family: 'Material Symbols Rounded', 'Material Symbols Outlined' !important;
+        }}
+        .block-container {{ padding-top: 2.4rem; padding-bottom: 3.5rem; max-width: 1180px; }}
 
-        /* ---- Headers: near-black, title-case, restrained ---- */
-        h1 {{ font-weight: 600; letter-spacing: -0.01em; color: {TEXT_BRIGHT};
-              font-size: 1.6rem; }}
-        h2 {{ font-weight: 600; letter-spacing: 0; color: {TEXT_BRIGHT};
-              font-size: 1.12rem; margin-top: 0.5rem; }}
-        h3 {{ font-weight: 600; letter-spacing: 0; color: {TEXT_BRIGHT};
-              font-size: 0.96rem; }}
+        /* ---- Headers: near-black, restrained serif (no tight tracking) ---- */
+        h1 {{ font-weight: 700; letter-spacing: 0; color: {TEXT_BRIGHT};
+              font-size: 1.85rem; line-height: 1.25; margin-bottom: 0.2rem; }}
+        h2 {{ font-weight: 700; letter-spacing: 0; color: {TEXT_BRIGHT};
+              font-size: 1.3rem; margin-top: 0.6rem; }}
+        h3 {{ font-weight: 700; letter-spacing: 0; color: {TEXT_BRIGHT};
+              font-size: 1.05rem; }}
         [data-testid="stCaptionContainer"], .stCaption, small {{ color: {MUTED}; }}
         a, a:visited {{ color: {ACCENT}; text-decoration: none; }}
         a:hover {{ color: {ACCENT_DEEP}; text-decoration: underline; }}
@@ -71,35 +82,35 @@ def inject_css() -> None:
             box-shadow: none;
         }}
         [data-testid="stMetricLabel"] p {{
-            color: {MUTED}; font-size: 0.68rem; font-weight: 600;
-            text-transform: uppercase; letter-spacing: 0.08em;
+            color: {MUTED}; font-size: 0.74rem; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 0.07em;
         }}
         [data-testid="stMetricValue"] {{
             font-variant-numeric: tabular-nums;
-            font-weight: 600; color: {TEXT_BRIGHT}; font-size: 1.5rem;
-            letter-spacing: -0.01em;
+            font-weight: 700; color: {TEXT_BRIGHT}; font-size: 1.65rem;
+            letter-spacing: 0;
         }}
         [data-testid="stMetricDelta"] {{
             font-variant-numeric: tabular-nums;
-            font-weight: 500; font-size: 0.8rem;
+            font-weight: 400; font-size: 0.9rem;
         }}
         [data-testid="stMetricDelta"] svg {{ display: none; }}   /* drop arrow glyph */
 
         /* ---- Tables: thin rules, right-aligned tabular figures ---- */
         [data-testid="stTable"] {{ overflow-x: auto; }}
         [data-testid="stTable"] table {{
-            border-collapse: collapse; width: 100%; font-size: 0.85rem;
+            border-collapse: collapse; width: 100%; font-size: 0.95rem;
             background: {PANEL}; border: 1px solid {BORDER}; border-radius: 6px;
         }}
         [data-testid="stTable"] thead th {{
             background: {PANEL_ALT}; color: {MUTED};
-            font-weight: 600; font-size: 0.68rem; text-transform: uppercase;
-            letter-spacing: 0.06em; text-align: right;
+            font-weight: 700; font-size: 0.74rem; text-transform: uppercase;
+            letter-spacing: 0.05em; text-align: right;
             border-bottom: 1px solid {BORDER_BRIGHT}; padding: 10px 16px; white-space: nowrap;
         }}
         [data-testid="stTable"] thead th:first-child {{ text-align: left; }}
         [data-testid="stTable"] tbody th {{
-            text-align: left; font-weight: 500; color: {TEXT};
+            text-align: left; font-weight: 700; color: {TEXT};
             padding: 8px 16px; border-bottom: 1px solid {BORDER}; white-space: nowrap;
         }}
         [data-testid="stTable"] tbody td {{
@@ -117,12 +128,12 @@ def inject_css() -> None:
             gap: 0.4rem; border-bottom: 1px solid {BORDER};
         }}
         [data-testid="stTabs"] button[role="tab"] {{
-            font-weight: 500; color: {MUTED}; padding: 0.5rem 1.0rem;
-            font-size: 0.9rem; letter-spacing: 0;
+            font-weight: 400; color: {MUTED}; padding: 0.5rem 1.05rem;
+            font-size: 1.0rem; letter-spacing: 0;
         }}
         [data-testid="stTabs"] button[role="tab"]:hover {{ color: {TEXT_BRIGHT}; }}
         [data-testid="stTabs"] button[role="tab"][aria-selected="true"] {{
-            color: {ACCENT}; font-weight: 600;
+            color: {ACCENT}; font-weight: 700;
         }}
         [data-testid="stTabs"] [data-baseweb="tab-highlight"] {{ background-color: {ACCENT}; }}
         [data-testid="stTabs"] [data-baseweb="tab-border"] {{ background-color: {BORDER}; }}
@@ -161,9 +172,9 @@ def inject_css() -> None:
 
         /* ---- Sidebar: white surface + hairline ---- */
         [data-testid="stSidebar"] {{ background: {PANEL}; border-right: 1px solid {BORDER}; }}
-        [data-testid="stSidebar"] h2 {{ font-size: 0.9rem; }}
-        [data-testid="stSidebar"] h3 {{ font-size: 0.8rem; color: {MUTED};
-            text-transform: uppercase; letter-spacing: 0.06em; }}
+        [data-testid="stSidebar"] h2 {{ font-size: 1.05rem; }}
+        [data-testid="stSidebar"] h3 {{ font-size: 0.82rem; color: {MUTED};
+            text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; }}
 
         /* ---- Inputs ---- */
         [data-testid="stTextInput"] input {{

@@ -4,8 +4,8 @@ separate from the pure `engine/` package.
 
 Visual language lives in `ui_theme.py` (the light institutional skin + shared palette). The
 charts below import that palette so the plots match the page: white surfaces, a single muted
-navy accent, green/red reserved strictly for positive/negative deltas, and tabular sans-serif
-figures.
+navy accent, green/red reserved strictly for positive/negative deltas, and the serif (Times
+New Roman) typeface with tabular figures.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from ui_theme import (
     NUM,
     PANEL,
     RED,
-    SANS,
+    SERIF,
     TEXT,
     TEXT_BRIGHT,
 )
@@ -60,14 +60,14 @@ def term_row(keys: list[str], label: str = "Key terms — click any to learn mor
 
 
 # --------------------------------------------------------------------------------------
-# Plotly styling — white surface, single navy accent, muted gridlines, clean sans fonts
+# Plotly styling — white surface, single navy accent, muted gridlines, serif fonts
 # --------------------------------------------------------------------------------------
 def _style(fig: go.Figure, height: int = 360) -> go.Figure:
     fig.update_layout(
         template="plotly_white",
         paper_bgcolor=SURFACE,
         plot_bgcolor=SURFACE,
-        font=dict(family=SANS.replace("'", ""), color=TEXT, size=12),
+        font=dict(family=SERIF.replace("'", ""), color=TEXT, size=12),
         height=height,
         margin=dict(l=10, r=10, t=28, b=10),
         showlegend=False,
@@ -250,7 +250,7 @@ def sensitivity_heatmap(
     fig.update_layout(
         template="plotly_white",
         paper_bgcolor=SURFACE, plot_bgcolor=SURFACE,
-        font=dict(family=SANS.replace("'", ""), color=TEXT, size=12),
+        font=dict(family=SERIF.replace("'", ""), color=TEXT, size=12),
         height=380, margin=dict(l=10, r=10, t=30, b=10),
         annotations=annotations, shapes=[base_outline],
         xaxis=dict(title=dict(text="WACC (discount rate)", font=dict(color=MUTED, size=11)),
