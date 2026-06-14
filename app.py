@@ -343,7 +343,7 @@ def render_overview_tab(
         p4.metric("Net debt (bridge)", fmt_compact(latest.net_debt_for_bridge(False)))
 
     if profile.description:
-        with st.expander("What does this company do?", expanded=True):
+        with st.expander("What does this company do?", expanded=False):
             st.write(profile.description)
             if profile.website:
                 st.caption(f"Website: {profile.website}")
