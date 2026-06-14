@@ -80,11 +80,11 @@ def _fmt_compact(value: float) -> str:
     return f"{value:,.0f}"
 
 
-def build_prompt(ctx: ThesisContext) -> str:
-    """Build the grounded Gemini prompt. Pure and deterministic (unit-tested).
+def _facts_block(ctx: ThesisContext) -> str:
+    """Build the grounded "=== VALUATION DATA ===" fact lines shared by every prompt.
 
-    Embeds the actual valuation numbers and instructs the model to reference them and to
-    return exactly three markdown sections.
+    Pure and deterministic: each line is emitted only when its underlying figure exists, so
+    a missing input is omitted rather than fabricated.
     """
     cur = (ctx.currency or "").strip()
     cur_sp = f" {cur}" if cur and cur != "—" else ""
@@ -125,7 +125,16 @@ def build_prompt(ctx: ThesisContext) -> str:
     else:
         facts.append("Recent news: not available (generate the thesis from the numbers).")
 
-    facts_block = "\n".join(facts)
+    return "\n".join(facts)
+
+
+def build_prompt(ctx: ThesisContext) -> str:
+    """Build the grounded Gemini prompt. Pure and deterministic (unit-tested).
+
+    Embeds the actual valuation numbers and instructs the model to reference them and to
+    return exactly three markdown sections.
+    """
+    facts_block = _facts_block(ctx)
 
     return (
         "You are an equity research analyst writing a concise, balanced investment thesis "
@@ -149,6 +158,41 @@ def build_prompt(ctx: ThesisContext) -> str:
         "3-5 bullet points on the key risks and what would invalidate the thesis.\n\n"
         "Be specific and cite the figures. Do not add any sections beyond these three. Do "
         "not give a buy/sell recommendation or a price target."
+    )
+
+
+def build_report_prompt(ctx: ThesisContext) -> str:
+    """Build the prompt for the one-page PDF report's written analysis. Pure/deterministic.
+
+    Unlike :func:`build_prompt` (the three-section AI Insights tab thesis), this asks for a
+    SHORT four-section analysis — Investment Thesis, Bull Case, Bear Case, Key Risks — at a
+    few sentences each, so the whole report fits on a single page.
+    """
+    facts_block = _facts_block(ctx)
+
+    return (
+        "You are an equity research analyst writing the written analysis for a CONCISE, "
+        f"one-page investment report on {ctx.company_name} ({ctx.symbol}). Base your analysis "
+        "ONLY on the figures below — a discounted-cash-flow (DCF) valuation, its gap versus "
+        "the current market price, and trading multiples. Reference the ACTUAL numbers (the "
+        "DCF value per share, the % gap vs market, the multiples, the WACC) in your "
+        "reasoning; do not produce generic boilerplate.\n\n"
+        "=== VALUATION DATA ===\n"
+        f"{facts_block}\n"
+        "=== END DATA ===\n\n"
+        "Write in GitHub-flavored Markdown with EXACTLY these four sections, in this order, "
+        "each as a level-2 heading. Write 2-3 short sentences of prose per section (NOT bullet "
+        "lists). Keep the WHOLE response under ~180 words so it fits on one page:\n\n"
+        "## Investment Thesis\n"
+        "The overall view in 2-3 sentences, grounded in the DCF gap and multiples.\n\n"
+        "## Bull Case\n"
+        "Why it could outperform.\n\n"
+        "## Bear Case\n"
+        "Why it could underperform.\n\n"
+        "## Key Risks\n"
+        "The main risks and what would invalidate the thesis.\n\n"
+        "Be specific and cite the figures. Do not add sections beyond these four, and do not "
+        "give a buy/sell recommendation or a price target."
     )
 
 
@@ -179,17 +223,20 @@ def generate_ai_thesis(
     model: str = DEFAULT_MODEL,
     *,
     model_factory: Optional[ModelFactory] = None,
+    prompt: Optional[str] = None,
 ) -> str:
     """Generate a grounded Bull/Bear/Risk thesis via Gemini and return Markdown text.
 
     Raises :class:`AIKeyError` if no key, :class:`AIRateLimitError` on a 429/quota error,
     and :class:`AIError` for any other failure (including an empty response). The
     ``model_factory`` hook lets tests inject a fake model so no real key/SDK is needed.
+    Pass ``prompt`` to override the default three-section prompt (e.g. the concise
+    report prompt); otherwise :func:`build_prompt` is used.
     """
     if not api_key:
         raise AIKeyError("No Gemini API key provided.")
 
-    prompt = build_prompt(ctx)
+    prompt = prompt or build_prompt(ctx)
     factory = model_factory or _default_model_factory
     try:
         gen_model = factory(api_key, model)
@@ -205,3 +252,22 @@ def generate_ai_thesis(
     if not text:
         raise AIError("Gemini returned an empty response.")
     return text
+
+
+def generate_report_thesis(
+    ctx: ThesisContext,
+    api_key: str | None,
+    model: str = DEFAULT_MODEL,
+    *,
+    model_factory: Optional[ModelFactory] = None,
+) -> str:
+    """Generate the CONCISE four-section written analysis for the one-page PDF report.
+
+    Same grounding and error semantics as :func:`generate_ai_thesis`, but uses
+    :func:`build_report_prompt` (Investment Thesis / Bull / Bear / Key Risks, a few
+    sentences each) so the report stays on a single page.
+    """
+    return generate_ai_thesis(
+        ctx, api_key, model,
+        model_factory=model_factory, prompt=build_report_prompt(ctx),
+    )

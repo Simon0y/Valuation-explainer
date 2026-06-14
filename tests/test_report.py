@@ -5,7 +5,14 @@ session (plain values) and checks the Markdown has the key sections and the PDF 
 produced without error, including the best-effort matplotlib chart.
 """
 
+import re
+
 from content.report import DISCLAIMER, ReportData, build_markdown, build_pdf
+
+
+def _page_count(pdf: bytes) -> int:
+    # fpdf2 writes one "/Type /Page" per page plus one "/Type /Pages" tree root.
+    return len(re.findall(rb"/Type\s*/Page(?![s])", bytes(pdf)))
 
 
 def _full_risk_bands(n: int = 253) -> dict:
@@ -110,6 +117,47 @@ def test_pdf_minimal_report():
     data = ReportData(company_name="X", symbol="X")
     pdf = build_pdf(data)
     assert bytes(pdf[:5]) == b"%PDF-"
+
+
+def test_pdf_is_exactly_one_page():
+    # A full report with a four-section thesis must stay on a single page.
+    data = _full_report()
+    data.ai_thesis = (
+        "## Investment Thesis\nThe DCF implies +25% upside; multiples look full.\n"
+        "## Bull Case\nMargins sustain growth and the gap closes.\n"
+        "## Bear Case\nA rich 28x P/E leaves little room for error.\n"
+        "## Key Risks\nDemand cyclicality, competition, and FX."
+    )
+    assert _page_count(build_pdf(data)) == 1
+
+
+def test_pdf_long_thesis_still_one_page():
+    # An over-long thesis is budgeted against the footer, so the PDF never spills to page 2.
+    data = _full_report()
+    data.ai_thesis = "\n\n".join(
+        f"## {h}\n" + ("A long sentence that pads the section considerably. " * 14)
+        for h in ("Investment Thesis", "Bull Case", "Bear Case", "Key Risks")
+    )
+    assert _page_count(build_pdf(data)) == 1
+
+
+def test_pdf_failsoft_note_when_no_thesis_one_page():
+    # No thesis but a note (e.g. no Gemini key) → numeric sections + note, still one page.
+    data = _full_report()
+    data.ai_thesis = None
+    data.ai_note = "AI thesis unavailable - no Gemini API key configured; numeric analysis only."
+    pdf = build_pdf(data)
+    assert _page_count(pdf) == 1
+
+
+def test_markdown_shows_note_when_thesis_unavailable():
+    data = ReportData(
+        company_name="Z", symbol="Z",
+        ai_note="AI thesis unavailable - generation failed; numeric analysis only.",
+    )
+    md = build_markdown(data)
+    assert "## AI Investment Thesis" in md
+    assert "AI thesis unavailable" in md
 
 
 def test_trailing_pe_single_source_no_conflict():

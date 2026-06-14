@@ -12,7 +12,9 @@ from ai_thesis import (
     AIRateLimitError,
     ThesisContext,
     build_prompt,
+    build_report_prompt,
     generate_ai_thesis,
+    generate_report_thesis,
 )
 
 
@@ -84,6 +86,35 @@ class _FakeModel:
 
     def generate_content(self, _prompt):
         return _FakeResponse(self._text)
+
+
+def test_report_prompt_has_four_concise_sections():
+    p = build_report_prompt(_ctx())
+    assert "## Investment Thesis" in p
+    assert "## Bull Case" in p
+    assert "## Bear Case" in p
+    assert "## Key Risks" in p
+    # Concise + grounded: word cap requested and the numbers are embedded.
+    assert "180 words" in p
+    assert "150.00" in p and "+25.0%" in p and "8.50%" in p
+    assert "buy/sell recommendation" in p.lower()
+
+
+def test_generate_report_thesis_uses_the_report_prompt():
+    captured = {}
+
+    class _CapModel:
+        def generate_content(self, prompt):
+            captured["prompt"] = prompt
+            return _FakeResponse("## Investment Thesis\nView.\n## Bull Case\nUp.")
+
+    out = generate_report_thesis(
+        _ctx(), "FAKE_KEY", model_factory=lambda k, m: _CapModel()
+    )
+    assert "Investment Thesis" in out
+    # It must have sent the four-section report prompt, not the three-section tab prompt.
+    assert "## Key Risks" in captured["prompt"]
+    assert "## Risk Factors" not in captured["prompt"]
 
 
 def test_generate_with_mocked_factory_returns_text():

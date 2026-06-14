@@ -43,6 +43,7 @@ from ai_thesis import (
     AIRateLimitError,
     ThesisContext,
     generate_ai_thesis,
+    generate_report_thesis,
 )
 from engine.defaults import (
     default_dcf_assumptions,
@@ -230,11 +231,11 @@ def render_sidebar_setup(api_key: str | None) -> tuple[str, int, bool, bool]:
             .upper()
         )
         years_to_load = st.slider(
-            "Years of history", min_value=1, max_value=10, value=5,
+            "Years of history", min_value=1, max_value=5, value=5,
             help=(
-                "Requests up to this many years of annual statements. The API may return "
-                "fewer (the free FMP tier often caps at ~5); only the years actually returned "
-                "are shown — never padded or fabricated."
+                "Requests up to this many years of annual statements. The free FMP tier "
+                "typically returns about 5 years; only the years actually returned are shown "
+                "— never padded or fabricated."
             ),
         )
         go = st.button("Load company", type="primary", disabled=not api_key)
@@ -1231,11 +1232,22 @@ def _collect_report_data(fin: CompanyFinancials) -> ReportData:
     """Build a ReportData purely from session-state snapshots + the loaded financials.
 
     No FMP/Gemini calls: valuation/risk/peers come from snapshots the tabs already wrote,
-    multiples are derived from the in-hand financials, and the AI thesis (if any) is read
-    from session state. Missing sections are simply left as None and skipped downstream."""
+    multiples are derived from the in-hand financials, and the written analysis is read from
+    session state. The report prefers the CONCISE four-section thesis prepared for the PDF
+    (``_report_thesis_<sym>``); if that hasn't been generated yet it falls back to the
+    verbose AI Insights tab thesis. Missing sections are left as None and skipped."""
     profile = fin.profile
     sym = profile.symbol
-    thesis = st.session_state.get(f"_ai_thesis_{sym}")
+
+    blob = st.session_state.get(f"_report_thesis_{sym}")  # concise report thesis (a dict)
+    if blob:
+        ai_thesis = blob.get("thesis")
+        ai_note = blob.get("note")
+        ai_news = bool(blob.get("news"))
+    else:
+        ai_thesis = st.session_state.get(f"_ai_thesis_{sym}")  # verbose tab thesis (str)
+        ai_note = None
+        ai_news = bool(st.session_state.get("_ai_news_included", False))
 
     # ReportData enforces a single source of truth for the company's trailing P/E across the
     # Key Multiples and Peer Comparison sections (see ReportData.__post_init__), so the same
@@ -1250,29 +1262,63 @@ def _collect_report_data(fin: CompanyFinancials) -> ReportData:
         multiples=_market_multiples(fin),
         peers=st.session_state.get("_report_peers"),
         risk=st.session_state.get("_report_risk"),
-        ai_thesis=thesis,
-        ai_news_included=bool(st.session_state.get("_ai_news_included", False)),
+        ai_thesis=ai_thesis,
+        ai_news_included=ai_news,
+        ai_note=ai_note,
     )
 
 
-def _render_export_section(fin: CompanyFinancials) -> None:
-    """Render the 'Export Investment Report' download buttons (Markdown + PDF).
+def _ensure_report_thesis(
+    api_key: str, fin: CompanyFinancials, wacc_result, include_lt_inv: bool
+) -> dict:
+    """Generate the CONCISE four-section written analysis for the one-page report.
 
-    Markdown is the bulletproof primary; PDF is best-effort and, if it can't be built in
-    this environment, degrades to a disabled button rather than crashing the app."""
+    Returns a dict ``{thesis, note, news}``. Fail-soft: with no Gemini key, a rate limit, or
+    any error, ``thesis`` is None and ``note`` carries a short explanation so the report
+    still includes the numeric sections with a note instead of blank analysis."""
+    gemini_key = resolve_gemini_key()
+    if not gemini_key:
+        return {
+            "thesis": None,
+            "note": "AI thesis unavailable - no Gemini API key configured; numeric analysis only.",
+            "news": False,
+        }
+    try:
+        ctx, _ = _build_thesis_context(api_key, fin, wacc_result, include_lt_inv)
+        thesis = generate_report_thesis(ctx, gemini_key)
+        return {"thesis": thesis, "note": None, "news": ctx.news_included}
+    except AIRateLimitError:
+        return {"thesis": None,
+                "note": "AI thesis unavailable - Gemini rate limit reached; numeric analysis only.",
+                "news": False}
+    except Exception:  # noqa: BLE001 — analysis is best-effort; never break the export
+        return {"thesis": None,
+                "note": "AI thesis unavailable - generation failed; numeric analysis only.",
+                "news": False}
+
+
+def _render_export_section(
+    api_key: str, fin: CompanyFinancials, wacc_result, include_lt_inv: bool
+) -> None:
+    """Render the 'Export Investment Report' section.
+
+    Markdown is the bulletproof primary (network-free). The PDF is a clean, single-page
+    analyst report whose written analysis (the AI thesis) is generated ON DEMAND when the
+    user builds it — so no Gemini call happens unless a report is actually requested. The
+    built PDF is cached per company so re-renders don't re-call Gemini."""
     st.divider()
     st.subheader("Export Investment Report")
     st.caption(
-        "Package this session's computed results — DCF, multiples, peers, risk, and the AI "
-        "thesis (if generated) — into a downloadable report. No new data is fetched; only "
-        "sections you've already computed are included."
+        "A clean, single-page analyst report — DCF summary, key multiples, a peer takeaway, "
+        "Monte Carlo risk, and an AI investment thesis (Investment Thesis · Bull · Bear · "
+        "Key Risks). The thesis is generated on demand when you build the PDF."
     )
 
-    data = _collect_report_data(fin)
-    base = (fin.profile.symbol or "report").lower()
+    sym = fin.profile.symbol or "report"
+    base = sym.lower()
 
     try:
-        md_bytes = build_markdown(data).encode("utf-8")
+        md_bytes = build_markdown(_collect_report_data(fin)).encode("utf-8")
     except Exception:  # noqa: BLE001 — markdown is meant to be bulletproof, but never crash
         st.warning("Couldn't assemble the report from this session.")
         return
@@ -1284,28 +1330,35 @@ def _render_export_section(fin: CompanyFinancials) -> None:
             data=md_bytes,
             file_name=f"{base}_investment_report.md",
             mime="text/markdown",
-            type="primary",
             use_container_width=True,
             key="dl_report_md",
         )
     with c2:
-        try:
-            pdf_bytes = build_pdf(data)
-        except Exception:  # noqa: BLE001 — PDF is secondary; fall back to Markdown only
-            st.button(
-                "PDF unavailable", disabled=True, use_container_width=True,
-                key="dl_report_pdf_disabled",
-            )
-            st.caption("PDF export isn't available in this environment — use Markdown.")
-        else:
+        pdf_key = f"_report_pdf_{sym}"
+        have_pdf = pdf_key in st.session_state
+        btn_label = "Rebuild one-page PDF" if have_pdf else "Generate one-page PDF"
+        if st.button(btn_label, type="primary", use_container_width=True, key="gen_report_pdf"):
+            with st.spinner("Building one-page report (generating AI thesis)…"):
+                st.session_state[f"_report_thesis_{sym}"] = _ensure_report_thesis(
+                    api_key, fin, wacc_result, include_lt_inv
+                )
+                try:
+                    st.session_state[pdf_key] = build_pdf(_collect_report_data(fin))
+                except Exception:  # noqa: BLE001 — PDF is secondary; degrade gracefully
+                    st.session_state.pop(pdf_key, None)
+            have_pdf = pdf_key in st.session_state
+
+        if have_pdf:
             st.download_button(
-                "Download report (PDF)",
-                data=pdf_bytes,
+                "Download one-page PDF",
+                data=st.session_state[pdf_key],
                 file_name=f"{base}_investment_report.pdf",
                 mime="application/pdf",
                 use_container_width=True,
                 key="dl_report_pdf",
             )
+        elif st.session_state.get("gen_report_pdf"):
+            st.caption("PDF export isn't available in this environment — use Markdown.")
 
 
 # ======================================================================================
@@ -1359,9 +1412,13 @@ def main() -> None:
     if st.session_state.get("_loaded_symbol") != symbol:
         for k in SLIDER_KEYS:
             st.session_state.pop(k, None)
-        # Drop stale export snapshots so a new company never exports the old one's results.
-        for k in ("_report_valuation", "_report_risk", "_report_peers"):
-            st.session_state.pop(k, None)
+        # Drop stale export snapshots so a new company never exports the old one's results,
+        # including any per-company cached report thesis / built PDF.
+        for k in list(st.session_state.keys()):
+            if k in ("_report_valuation", "_report_risk", "_report_peers") or (
+                isinstance(k, str) and k.startswith(("_report_pdf_", "_report_thesis_"))
+            ):
+                st.session_state.pop(k, None)
         st.session_state["_loaded_symbol"] = symbol
 
     # WACC underpins the DCF sliders + DCF tab (may be None for ticker w/o market cap).
@@ -1384,8 +1441,9 @@ def main() -> None:
         render_peers_tab(api_key, fin)
 
     # Export packages whatever the tabs above computed THIS run (read from session state).
-    # It is rendered last so every snapshot is fresh, and makes no new FMP/Gemini calls.
-    _render_export_section(fin)
+    # Rendered last so every snapshot is fresh; the AI thesis is generated on demand only
+    # when the user builds the PDF (no Gemini call otherwise).
+    _render_export_section(api_key, fin, wacc_result, include_lt_inv)
 
 
 main()
