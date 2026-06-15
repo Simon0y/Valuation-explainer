@@ -511,6 +511,34 @@ def _render_dcf(
     with st.expander("How the discount rate (WACC) is derived"):
         st.markdown(wacc_buildup_md(wacc_result, live_wacc=wacc_v))
 
+    # ---- Terminal-value sanity check: implied exit multiple vs current trading multiple ----
+    # Reads values the DCF already computed (terminal value + final-year EBIT and D&A); it
+    # only forms a display ratio and does NOT feed back into the valuation.
+    term_ebitda = dcf.years[-1].ebit + dcf.years[-1].depreciation_amortization
+    implied_exit = dcf.terminal_value / term_ebitda if term_ebitda > 0 else None
+    current_ev_ebitda = _market_multiples(fin).get("EV/EBITDA")
+    if implied_exit is not None:
+        st.markdown("**Terminal-value sanity check — implied exit multiple**")
+        s1, s2 = st.columns(2)
+        s1.metric(
+            "Implied terminal EV/EBITDA",
+            f"{implied_exit:,.1f}×",
+            delta=(f"{implied_exit - current_ev_ebitda:+.1f}× vs current"
+                   if current_ev_ebitda else None),
+            delta_color="off",
+        )
+        s2.metric(
+            "Current EV/EBITDA",
+            f"{current_ev_ebitda:,.1f}×" if current_ev_ebitda else "—",
+        )
+        st.caption(
+            "The Gordon-growth terminal value implies selling the business at this "
+            "EV/EBITDA in the final forecast year. Well ABOVE today's multiple ⇒ the "
+            "terminal value (and fair value) is likely too optimistic; near or below "
+            "today's is more conservative. This is a read-only check — it does not change "
+            "the DCF."
+        )
+
     # ---- Sensitivity matrix (recomputes the same DCF across a WACC × g∞ grid) ----
     render_sensitivity_matrix(fin, include_lt_inv, wacc_v, tg_v, growth_v, margin_v, cur)
 
