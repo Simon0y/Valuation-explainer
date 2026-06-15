@@ -83,12 +83,17 @@ def _style(fig: go.Figure, height: int = 360) -> go.Figure:
 
 
 def _fmt_compact(value: float) -> str:
-    """Compact money label for chart annotations (e.g. 1.9T, 58B, 940M)."""
+    """Compact money label for chart annotations (e.g. 1.9T, 58B, 940M).
+
+    Negatives use accounting parentheses, e.g. (50.0B), to match the tables/metrics.
+    """
     a = abs(value)
     for div, suffix in ((1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K")):
         if a >= div:
-            return f"{value/div:,.1f}{suffix}"
-    return f"{value:,.0f}"
+            body = f"{a/div:,.1f}{suffix}"
+            return f"({body})" if value < 0 else body
+    body = f"{a:,.0f}"
+    return f"({body})" if value < 0 else body
 
 
 # --------------------------------------------------------------------------------------

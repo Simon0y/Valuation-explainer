@@ -143,8 +143,15 @@ def load_recent_headlines(api_key: str, symbol: str) -> list[str]:
 # --------------------------------------------------------------------------------------
 # Formatting helpers (display only)
 # --------------------------------------------------------------------------------------
+def _accounting(body: str, negative: bool) -> str:
+    """Wrap a formatted magnitude in parentheses for negatives (accounting style)."""
+    return f"({body})" if negative else body
+
+
 def fmt_money(value: float | None) -> str:
-    return "—" if value is None else f"{value:,.0f}"
+    if value is None:
+        return "—"
+    return _accounting(f"{abs(value):,.0f}", value < 0)
 
 
 def fmt_compact(value: float | None) -> str:
@@ -153,12 +160,45 @@ def fmt_compact(value: float | None) -> str:
     a = abs(value)
     for div, suffix in ((1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K")):
         if a >= div:
-            return f"{value/div:,.1f}{suffix}"
-    return f"{value:,.0f}"
+            return _accounting(f"{a/div:,.1f}{suffix}", value < 0)
+    return _accounting(f"{a:,.0f}", value < 0)
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
+
+
+def wacc_buildup_md(wacc_result, live_wacc: float | None = None) -> str:
+    """Plain-text WACC derivation from the components the engine already computed.
+
+    Surfaces existing intermediate values from :class:`WACCResult` (CAPM cost of equity,
+    after-tax cost of debt, market-value weights) — it invents no new inputs and does no
+    finance math beyond restating the engine's own numbers.
+    """
+    w = wacc_result
+    lines = [
+        "**How the discount rate (WACC) is derived** — from the model's own inputs "
+        "(CAPM cost of equity, after-tax cost of debt, blended by market-value weights):",
+        "",
+        f"- **Cost of equity (CAPM)** = risk-free + β × equity risk premium "
+        f"= {w.risk_free_rate:.1%} + {w.beta:.2f} × {w.equity_risk_premium:.1%} "
+        f"= **{w.cost_of_equity:.1%}**",
+        f"- **After-tax cost of debt** = pre-tax cost of debt × (1 − tax) "
+        f"= {w.pretax_cost_of_debt:.1%} × (1 − {w.tax_rate:.1%}) "
+        f"= **{w.after_tax_cost_of_debt:.1%}**",
+        f"- **Capital weights** (market values) = equity {w.equity_weight:.1%} "
+        f"(E = {fmt_compact(w.equity_value)}), debt {w.debt_weight:.1%} "
+        f"(D = {fmt_compact(w.debt_value)})",
+        f"- **WACC** = wₑ × cost of equity + w_d × after-tax cost of debt "
+        f"= {w.equity_weight:.1%} × {w.cost_of_equity:.1%} + "
+        f"{w.debt_weight:.1%} × {w.after_tax_cost_of_debt:.1%} = **{w.wacc:.2%}**",
+    ]
+    if live_wacc is not None and abs(live_wacc - w.wacc) > 5e-5:
+        lines.append(
+            f"\n*The DCF above uses the sidebar discount rate ({live_wacc:.2%}); the "
+            f"build-up shows the model's CAPM-derived starting value ({w.wacc:.2%}).*"
+        )
+    return "\n".join(lines)
 
 
 def seed(key: str, value) -> None:
@@ -466,6 +506,10 @@ def _render_dcf(
     st.plotly_chart(ui.dcf_waterfall(dcf, cur), use_container_width=True)
 
     ui.term_row(["fcff", "wacc", "terminal_value", "ev", "net_debt"])
+
+    # ---- WACC build-up (make the discount rate transparent, not a black box) ----
+    with st.expander("How the discount rate (WACC) is derived"):
+        st.markdown(wacc_buildup_md(wacc_result, live_wacc=wacc_v))
 
     # ---- Sensitivity matrix (recomputes the same DCF across a WACC × g∞ grid) ----
     render_sensitivity_matrix(fin, include_lt_inv, wacc_v, tg_v, growth_v, margin_v, cur)
