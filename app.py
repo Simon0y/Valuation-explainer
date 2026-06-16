@@ -101,6 +101,64 @@ def resolve_gemini_key() -> str | None:
     return _read_dotenv().get("GEMINI_API_KEY")
 
 
+# --------------------------------------------------------------------------------------
+# Optional "bring your own FMP key" — layered ON TOP of the default key + cache.
+#
+# By default the app runs on the built-in key with caching, so a first-time visitor needs
+# zero setup. If a user pastes their own key it is used for every FMP call in THEIR session
+# (so their usage never touches the shared quota or its cache). The key lives ONLY in
+# Streamlit session state for the duration of the session — it is never logged, written to
+# disk, or transmitted anywhere except to FMP itself.
+# --------------------------------------------------------------------------------------
+_BYO_KEY_HINT = (
+    " You can paste your own free FMP API key under **Advanced: use your own FMP API key** "
+    "in the sidebar for unlimited access — it stays in your browser session only."
+)
+
+
+def _user_fmp_key() -> str | None:
+    """Return the user's own FMP key for this session if they pasted one, else None.
+
+    Reads only from session state (set by the optional sidebar control); the key is never
+    stored or logged anywhere else.
+    """
+    raw = st.session_state.get("user_fmp_key")
+    return raw.strip() if isinstance(raw, str) and raw.strip() else None
+
+
+def _rate_limit_msg(base: str) -> str:
+    """Append the bring-your-own-key hint to a 429 message — unless the user is already
+    on their own key, in which case suggesting one would make no sense."""
+    return base if _user_fmp_key() else base + _BYO_KEY_HINT
+
+
+def _render_byo_key_input() -> None:
+    """Render the optional, collapsed 'use your own FMP API key' control.
+
+    Collapsed by default so first-time visitors get a zero-setup experience on the built-in
+    key. The value is held only in the keyed widget's session state (see ``_user_fmp_key``).
+    """
+    with st.expander("Advanced: use your own FMP API key", expanded=False):
+        st.caption(
+            "Optional. This app runs on a shared key with caching, so you need nothing to "
+            "get started. If you'd rather not share the quota — or you hit a rate limit — "
+            "paste your own free "
+            "[Financial Modeling Prep](https://site.financialmodelingprep.com/developer/docs/pricing) "
+            "key here and every data call in **this session** will use it instead. Your key "
+            "stays in your browser session only; it is never logged, stored, or sent "
+            "anywhere except to FMP."
+        )
+        st.text_input(
+            "Your FMP API key",
+            type="password",
+            key="user_fmp_key",
+            placeholder="paste your key (optional)",
+            label_visibility="collapsed",
+        )
+        if _user_fmp_key():
+            st.caption("✓ Your key is active for this session.")
+
+
 @st.cache_data(show_spinner=False)
 def load_financials(api_key: str, symbol: str, limit: int) -> CompanyFinancials:
     client = FMPClient(api_key)
@@ -255,16 +313,31 @@ TICKER_RE = re.compile(r"^[A-Z0-9.\-]{1,12}$")
 # ======================================================================================
 # Sidebar — global inputs (ticker + DCF assumption sliders)
 # ======================================================================================
-def render_sidebar_setup(api_key: str | None) -> tuple[str, int, bool, bool]:
-    """Render the top of the sidebar (data inputs) and return (symbol, years, lt_inv, go)."""
+def render_sidebar_setup(default_key: str | None) -> tuple[str | None, str, int, bool, bool]:
+    """Render the top of the sidebar (data inputs).
+
+    Returns ``(effective_key, symbol, years, lt_inv, go)``. The effective key is the user's
+    own FMP key if they pasted one under the optional Advanced control, otherwise the
+    built-in ``default_key``. A personal key routes every FMP call in this session through
+    it, so the user's usage never touches the shared default quota or its cache.
+    """
     with st.sidebar:
         st.header("Setup")
-        if api_key:
+
+        # Resolve the key in use this run. The Advanced control (rendered lower so it stays
+        # out of the way) writes to session state, which persists across reruns — so reading
+        # it here, before that widget is re-rendered, reflects the current value.
+        user_key = _user_fmp_key()
+        effective_key = user_key or default_key
+
+        if user_key:
+            st.success("Using your own FMP API key (this session only).")
+        elif default_key:
             st.success("FMP API key loaded.")
         else:
             st.error(
-                "No FMP API key found. Add it to `.streamlit/secrets.toml` "
-                "(see `secrets.toml.example`) or set the `FMP_API_KEY` environment variable."
+                "No FMP API key available. Open **Advanced: use your own FMP API key** "
+                "below and paste a free FMP key to get started."
             )
         symbol = (
             st.text_input("Ticker", value="AAPL", help="e.g. AAPL, MSFT, NVDA")
@@ -279,7 +352,9 @@ def render_sidebar_setup(api_key: str | None) -> tuple[str, int, bool, bool]:
                 "— never padded or fabricated."
             ),
         )
-        go = st.button("Load company", type="primary", disabled=not api_key)
+        go = st.button("Load company", type="primary", disabled=not effective_key)
+
+        _render_byo_key_input()
 
         st.divider()
         st.subheader("Net debt definition")
@@ -294,7 +369,7 @@ def render_sidebar_setup(api_key: str | None) -> tuple[str, int, bool, bool]:
                 "DCF equity bridge."
             ),
         )
-    return symbol, years_to_load, include_lt_inv, go
+    return effective_key, symbol, years_to_load, include_lt_inv, go
 
 
 def render_sidebar_dcf_controls(
@@ -952,7 +1027,7 @@ def render_risk_tab(api_key: str, fin: CompanyFinancials) -> None:
         with st.spinner(f"Loading price history for {sym}…"):
             prices = load_price_history(api_key, sym)
     except FMPRateLimitError:
-        st.info("Price data unavailable (provider rate limit) — try again later.")
+        st.info(_rate_limit_msg("Price data unavailable (provider rate limit) — try again later."))
         return
     except (FMPAuthError, FMPPlanError, FMPNotFound, FMPError):
         st.warning("Price data unavailable for this ticker.")
@@ -1358,7 +1433,7 @@ def render_peers_tab(api_key: str, fin: CompanyFinancials) -> None:
         with st.spinner(f"Finding peers for {sym} and pulling their metrics…"):
             comp = load_peer_comparison(api_key, sym)
     except FMPRateLimitError:
-        st.info("Peer data temporarily unavailable (provider rate limit) — try again later.")
+        st.info(_rate_limit_msg("Peer data temporarily unavailable (provider rate limit) — try again later."))
         return
     except (FMPAuthError, FMPPlanError, FMPNotFound, FMPError) as exc:
         st.error(f"Couldn't load peers: {exc}")
@@ -1611,13 +1686,20 @@ def main() -> None:
         "every term explained in plain language. _Educational use only; not investment advice._"
     )
 
-    api_key = resolve_api_key()
-    symbol, years_to_load, include_lt_inv, _go = render_sidebar_setup(api_key)
+    # `api_key` is the EFFECTIVE key: the user's own key if they pasted one (kept in
+    # session state only), otherwise the built-in default. Everything downstream — including
+    # the @st.cache_data caches, which are keyed on this argument — flows from it, so a
+    # personal key gets its own cache namespace and never touches the shared quota.
+    default_key = resolve_api_key()
+    api_key, symbol, years_to_load, include_lt_inv, _go = render_sidebar_setup(default_key)
 
     # Gating — render the sidebar footer before any early return so it always shows.
     if not api_key:
         render_sidebar_footer()
-        st.info("Add your FMP API key to get started (see the sidebar).")
+        st.info(
+            "No FMP API key available. Paste your own free FMP key under "
+            "**Advanced: use your own FMP API key** in the sidebar to get started."
+        )
         return
     if not symbol:
         render_sidebar_footer()
@@ -1634,7 +1716,11 @@ def main() -> None:
     try:
         with st.spinner(f"Fetching {symbol} from Financial Modeling Prep…"):
             fin = load_financials(api_key, symbol, years_to_load)
-    except (FMPAuthError, FMPPlanError, FMPRateLimitError, FMPError) as exc:
+    except FMPRateLimitError as exc:
+        render_sidebar_footer()
+        st.error(_rate_limit_msg(str(exc)))
+        return
+    except (FMPAuthError, FMPPlanError, FMPError) as exc:
         render_sidebar_footer()
         st.error(str(exc))
         return
