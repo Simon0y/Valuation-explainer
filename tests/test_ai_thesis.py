@@ -35,18 +35,35 @@ def _ctx() -> ThesisContext:
         revenue_growth=0.08,
         ebit_margin=0.30,
         multiples={"Trailing P/E": 28.4, "EV/EBITDA": 19.1},
+        target_pe=28.4,
+        median_peer_pe=22.0,
+        peer_count=6,
+        annualized_vol=0.32,
+        var_pct=0.41,
+        es_pct=0.52,
         headlines=["Synthetic Co beats earnings", "New product launched"],
         news_included=True,
     )
 
 
-def test_prompt_asks_for_exactly_three_sections():
+def test_prompt_asks_for_exactly_the_six_sections():
     p = build_prompt(_ctx())
-    assert "## Bull Case" in p
-    assert "## Bear Case" in p
-    assert "## Risk Factors" in p
-    # No buy/sell recommendation requested.
-    assert "do not give a buy/sell recommendation" in p.lower()
+    for heading in (
+        "## Investment Thesis",
+        "## Bull Case",
+        "## Bear Case",
+        "## Key Risks",
+        "## Valuation Commentary",
+        "## Catalysts",
+    ):
+        assert heading in p, heading
+    # The old three-section name is gone (renamed to Key Risks).
+    assert "## Risk Factors" not in p
+    # No buy/sell recommendation, and the not-investment-advice disclaimer is requested.
+    assert "no buy/sell recommendation" in p.lower()
+    assert "not investment advice" in p.lower()
+    # Accuracy guardrail: reason only from the data, don't invent figures.
+    assert "do not invent" in p.lower()
 
 
 def test_prompt_is_grounded_in_the_numbers():
@@ -57,6 +74,9 @@ def test_prompt_is_grounded_in_the_numbers():
     assert "undervalued" in p     # direction of the gap
     assert "8.50%" in p           # WACC
     assert "28.4x" in p           # a multiple
+    assert "22.0x" in p           # peer median P/E
+    assert "41.0%" in p           # 1-year 95% VaR
+    assert "52.0%" in p           # 1-year 95% Expected Shortfall
     assert "Synthetic Co beats earnings" in p  # a headline
 
 
@@ -73,6 +93,11 @@ def test_prompt_omits_missing_optional_fields():
     assert "DCF intrinsic value per share:" not in p
     assert "DCF gap vs market:" not in p
     assert "WACC (discount rate):" not in p
+    # The new risk/peer fact lines must also be omitted when their data is absent.
+    assert "Value-at-Risk" not in p
+    assert "Expected Shortfall" not in p
+    assert "Peer median trailing P/E" not in p
+    assert "Trailing P/E vs peers" not in p
 
 
 class _FakeResponse:
