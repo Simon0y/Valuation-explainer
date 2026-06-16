@@ -1,4 +1,4 @@
-# 📊 Valuation Explainer
+#Valuation Explainer
 
 An interactive Streamlit web app that **teaches DCF and LBO valuation to non-experts**.
 Enter a public-company ticker and the app:
@@ -11,7 +11,7 @@ Enter a public-company ticker and the app:
 - lets you move sliders (WACC, growth, multiples, leverage, hold period) and watch the
   valuation and charts update live.
 
-> ⚠️ **Educational use only — not investment advice.** All outputs depend on the assumptions
+> Educational use only — not investment advice.** All outputs depend on the assumptions
 > you choose and may rely on delayed or incomplete data.
 
 ## Stack
