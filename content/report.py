@@ -111,7 +111,7 @@ def build_markdown(data: ReportData) -> str:
     out: list[str] = []
 
     # ---- Header ----
-    out.append(f"# Investment Report — {data.company_name} ({data.symbol})")
+    out.append(f"# Investment Report: {data.company_name} ({data.symbol})")
     meta = []
     if data.report_date:
         meta.append(f"**Date:** {data.report_date}")
@@ -163,7 +163,7 @@ def build_markdown(data: ReportData) -> str:
             rel = "above" if p["target_pe"] > p["median_peer_pe"] else "below"
             out.append(
                 f"- Trailing P/E **{p['target_pe']:,.1f}x** vs peer median "
-                f"**{p['median_peer_pe']:,.1f}x** — trading **{rel}** the peer median."
+                f"**{p['median_peer_pe']:,.1f}x**, trading **{rel}** the peer median."
             )
         elif p.get("target_pe") is not None:
             out.append(f"- Trailing P/E **{p['target_pe']:,.1f}x**.")
@@ -171,7 +171,7 @@ def build_markdown(data: ReportData) -> str:
     # ---- Risk ----
     r = data.risk
     if r:
-        out.append("\n## Risk — Monte Carlo (GBM), 1-year, 95%")
+        out.append("\n## Risk: Monte Carlo (GBM), 1-year, 95%")
         if r.get("var_pct") is not None:
             out.append(
                 f"- **95% Value at Risk (VaR):** −{r['var_pct']:.1%}"

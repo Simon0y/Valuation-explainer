@@ -54,7 +54,7 @@ def _raise_for_status(resp: requests.Response, symbol: str) -> None:
         )
     if status == 403:
         raise FMPPlanError(
-            "FMP returned 403 — this endpoint or history depth is not available on your "
+            "FMP returned 403: this endpoint or history depth is not available on your "
             "current plan. Try a different ticker or a smaller request."
         )
     if status == 402:

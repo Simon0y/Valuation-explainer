@@ -13,11 +13,11 @@ from __future__ import annotations
 
 GLOSSARY: dict[str, dict[str, str]] = {
     "fcff": {
-        "term": "FCFF — Free Cash Flow to the Firm",
+        "term": "FCFF: Free Cash Flow to the Firm",
         "short": "Cash the business generates for ALL investors, before financing.",
         "long": (
             "The cash a company throws off from operations that is available to everyone "
-            "who funded it — both lenders and shareholders — *before* any debt payments. "
+            "who funded it (both lenders and shareholders) *before* any debt payments. "
             "We build it as **EBIT×(1−tax) + D&A − Capex − ΔNWC**: start with after-tax "
             "operating profit, add back depreciation (a non-cash charge), then subtract "
             "what the company must reinvest in equipment (capex) and in working capital. "
@@ -26,7 +26,7 @@ GLOSSARY: dict[str, dict[str, str]] = {
         ),
     },
     "wacc": {
-        "term": "WACC — Weighted-Average Cost of Capital",
+        "term": "WACC: Weighted-Average Cost of Capital",
         "short": "The blended return investors require; our DCF discount rate.",
         "long": (
             "The average annual return the company must earn to keep both its shareholders "
@@ -38,7 +38,7 @@ GLOSSARY: dict[str, dict[str, str]] = {
         ),
     },
     "capm": {
-        "term": "CAPM — Capital Asset Pricing Model",
+        "term": "CAPM: Capital Asset Pricing Model",
         "short": "How we estimate the cost of equity from risk.",
         "long": (
             "A standard way to estimate the return shareholders demand: "
@@ -48,7 +48,7 @@ GLOSSARY: dict[str, dict[str, str]] = {
         ),
     },
     "beta": {
-        "term": "β — Beta",
+        "term": "β: Beta",
         "short": "How much the stock moves relative to the overall market.",
         "long": (
             "A measure of a stock's sensitivity to market moves. Beta = 1 means it tends to "
@@ -57,7 +57,7 @@ GLOSSARY: dict[str, dict[str, str]] = {
         ),
     },
     "erp": {
-        "term": "ERP — Equity Risk Premium",
+        "term": "ERP: Equity Risk Premium",
         "short": "Extra return investors demand for holding stocks over safe bonds.",
         "long": (
             "The additional annual return, on top of the risk-free rate, that investors "
@@ -66,11 +66,11 @@ GLOSSARY: dict[str, dict[str, str]] = {
         ),
     },
     "nopat": {
-        "term": "NOPAT — Net Operating Profit After Tax",
+        "term": "NOPAT: Net Operating Profit After Tax",
         "short": "Operating profit (EBIT) after taxes, ignoring debt.",
         "long": (
             "EBIT×(1−tax rate). It's the profit the core business would earn after tax if it "
-            "had no debt at all — the starting point for unlevered free cash flow."
+            "had no debt at all, the starting point for unlevered free cash flow."
         ),
     },
     "terminal_value": {
@@ -99,12 +99,12 @@ GLOSSARY: dict[str, dict[str, str]] = {
         "short": "Converts a future dollar into today's dollars.",
         "long": (
             "Money in the future is worth less than money today. The discount factor for "
-            "year t is **1/(1+WACC)^t** — multiply a future cash flow by it to get its "
+            "year t is **1/(1+WACC)^t**: multiply a future cash flow by it to get its "
             "present value. Later years are discounted more heavily."
         ),
     },
     "ev": {
-        "term": "EV — Enterprise Value",
+        "term": "EV: Enterprise Value",
         "short": "The value of the whole business, debt + equity.",
         "long": (
             "What the entire operating business is worth to all investors, independent of "
@@ -120,21 +120,21 @@ GLOSSARY: dict[str, dict[str, str]] = {
             "Debt net of the cash a company is sitting on: **total debt − cash & short-term "
             "investments** (optionally also long-term investments). We subtract it from "
             "enterprise value to bridge to equity value, because the cash effectively "
-            "offsets the debt. Definitions vary on which cash counts — this app states "
+            "offsets the debt. Definitions vary on which cash counts; this app states "
             "exactly which one it uses everywhere it appears."
         ),
     },
     "moic": {
-        "term": "MOIC — Multiple on Invested Capital",
+        "term": "MOIC: Multiple on Invested Capital",
         "short": "How many times the sponsor's money grew (e.g. 2.5×).",
         "long": (
             "In an LBO, the total cash returned to the equity investor divided by the cash "
             "they put in. A MOIC of 2.5× means they got back 2.5 dollars for every dollar "
-            "invested. It ignores *how long* that took — that's what IRR adds."
+            "invested. It ignores *how long* that took; that's what IRR adds."
         ),
     },
     "irr": {
-        "term": "IRR — Internal Rate of Return",
+        "term": "IRR: Internal Rate of Return",
         "short": "The annualized % return on the investment.",
         "long": (
             "The compound annual growth rate that turns the money invested into the money "
@@ -144,7 +144,7 @@ GLOSSARY: dict[str, dict[str, str]] = {
         ),
     },
     "ev_ebitda": {
-        "term": "EV/EBITDA — Enterprise Multiple",
+        "term": "EV/EBITDA: Enterprise Multiple",
         "short": "Business value as a multiple of its operating cash earnings.",
         "long": (
             "Enterprise value divided by EBITDA. A quick way to price a business: “it's "
@@ -159,7 +159,7 @@ GLOSSARY: dict[str, dict[str, str]] = {
         "long": (
             "An LBO repayment rule where every dollar of free cash flow left after interest, "
             "taxes and reinvestment is used to pay down debt (a “100% sweep”). Paying debt "
-            "down faster reduces interest and increases the equity value at exit — a key "
+            "down faster reduces interest and increases the equity value at exit, a key "
             "way LBO returns are generated, called deleveraging."
         ),
     },
@@ -169,7 +169,7 @@ GLOSSARY: dict[str, dict[str, str]] = {
         "long": (
             "The amount of debt used in the buyout, usually expressed as a multiple of "
             "EBITDA (e.g. “5× leverage” = debt equal to five years of EBITDA). More leverage "
-            "means less equity is needed up front, which can magnify returns — but also "
+            "means less equity is needed up front, which can magnify returns, but also "
             "magnifies risk and interest costs."
         ),
     },

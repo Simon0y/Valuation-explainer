@@ -56,7 +56,7 @@ def inject_css() -> None:
         .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6 {{
             font-family: {SANS} !important;
         }}
-        /* Keep Material icon glyphs on their ligature font — never let the serif leak in,
+        /* Keep Material icon glyphs on their ligature font, never let the serif leak in,
            or icons render as raw text (e.g. "keyboard_double_arrow_right"). */
         [data-testid="stIconMaterial"] {{
             font-family: 'Material Symbols Rounded', 'Material Symbols Outlined' !important;
@@ -67,7 +67,7 @@ def inject_css() -> None:
         /* Restrained page title; tighten the gap to the caption beneath it. */
         h1 {{ font-weight: 700; letter-spacing: -0.01em; color: {TEXT_BRIGHT};
               font-size: 1.45rem; line-height: 1.2; margin: 0 0 0.15rem; padding-bottom: 0; }}
-        /* The page-title caption sits directly under h1 — pull it up snug. */
+        /* The page-title caption sits directly under h1, pull it up snug. */
         h1 + div [data-testid="stCaptionContainer"],
         [data-testid="stHeading"] + div [data-testid="stCaptionContainer"] {{ margin-top: -0.1rem; }}
         h2 {{ font-weight: 700; letter-spacing: 0; color: {TEXT_BRIGHT};
@@ -108,7 +108,7 @@ def inject_css() -> None:
         }}
         [data-testid="stMetricValue"] > div {{ width: 100%; text-align: right; }}
         /* The value text lives in an inner markdown container that Streamlit clips with
-           nowrap+ellipsis — unclip it so the full label wraps instead of becoming "…". */
+           nowrap+ellipsis, so unclip it and the full label wraps instead of becoming "…". */
         [data-testid="stMetricValue"] [data-testid="stMarkdownContainer"],
         [data-testid="stMetricValue"] [data-testid="stMarkdownContainer"] p {{
             white-space: normal !important; overflow: visible !important;
@@ -197,7 +197,7 @@ def inject_css() -> None:
         [data-testid="stAlert"] [data-testid="stMarkdownContainer"] p {{
             font-size: 0.86rem; line-height: 1.4; margin: 0;
         }}
-        /* The sidebar "FMP API key loaded" box was bulky — trim its padding. */
+        /* The sidebar "FMP API key loaded" box was bulky, so trim its padding. */
         [data-testid="stSidebar"] [data-testid="stAlert"] {{ padding: 0.55rem 0.75rem; }}
 
         /* ---- Sidebar: white surface + hairline, even control spacing ---- */

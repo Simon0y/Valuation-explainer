@@ -45,12 +45,12 @@ HAIRLINE = BORDER        # connectors / axis lines
 def term_popover(key: str) -> None:
     """Render a single clickable glossary “chip” that expands to a plain-language def."""
     entry = glossary_get(key)
-    with st.popover(entry["term"].split(" — ")[0]):
+    with st.popover(entry["term"].split(":")[0]):
         st.markdown(f"**{entry['term']}**")
         st.markdown(entry["long"])
 
 
-def term_row(keys: list[str], label: str = "Key terms — click any to learn more:") -> None:
+def term_row(keys: list[str], label: str = "Key terms, click any to learn more:") -> None:
     """Render a horizontal row of glossary chips."""
     st.caption(label)
     cols = st.columns(len(keys))

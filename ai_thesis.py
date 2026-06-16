@@ -137,7 +137,7 @@ def _facts_block(ctx: ThesisContext) -> str:
         rel = "above" if ctx.target_pe > ctx.median_peer_pe else "below"
         facts.append(
             f"Trailing P/E vs peers: {ctx.target_pe:,.1f}x for {ctx.symbol} vs a peer median "
-            f"of {ctx.median_peer_pe:,.1f}x ({n} peers) — trading {rel} the peer group"
+            f"of {ctx.median_peer_pe:,.1f}x ({n} peers), trading {rel} the peer group"
         )
     elif ctx.median_peer_pe is not None:
         facts.append(
@@ -190,7 +190,7 @@ def build_prompt(ctx: ThesisContext) -> str:
         "=== END DATA ===\n\n"
         "GROUNDING RULES (follow strictly):\n"
         "- Reason ONLY from the figures in the VALUATION DATA block above. Cite the actual "
-        "numbers — the DCF value per share and its % gap vs the market price, the WACC, the "
+        "numbers: the DCF value per share and its % gap vs the market price, the WACC, the "
         "terminal-growth / revenue-growth / EBIT-margin assumptions, the trailing multiples "
         "and how they compare to the peer median, and the Monte Carlo VaR/ES where given.\n"
         "- Do NOT invent or assume any financial figures, growth rates, margins, product "
@@ -199,10 +199,12 @@ def build_prompt(ctx: ThesisContext) -> str:
         "- Treat the DCF value as model output that depends on the stated assumptions, not as "
         "a fact; be explicit that the gap vs market is only as good as those assumptions.\n"
         "- No generic boilerplate that could apply to any company; no buy/sell recommendation "
-        "and no price target of your own.\n\n"
+        "and no price target of your own.\n"
+        "- Do NOT use em dashes (the long dash) anywhere in your output. Use commas, colons, "
+        "or parentheses instead. Normal hyphens in ranges and compound words are fine.\n\n"
         "Write in GitHub-flavored Markdown with EXACTLY these six sections, in this order, "
         "each as a level-2 (##) heading. Write each as ONE substantive paragraph of 2-4 "
-        "sentences of analyst prose (NOT bullet lists, NOT filler) — quality and grounding "
+        "sentences of analyst prose (NOT bullet lists, NOT filler), quality and grounding "
         "matter far more than length:\n\n"
         "## Investment Thesis\n"
         "The core view: what the DCF gap vs market and the multiples/peer/risk picture imply "
@@ -211,14 +213,14 @@ def build_prompt(ctx: ThesisContext) -> str:
         "What has to go right for the upside to be realized, tied to the DCF gap and the "
         "growth/margin assumptions and any favorable multiple-vs-peer comparison.\n\n"
         "## Bear Case\n"
-        "What could go wrong — e.g. rich multiples vs peers, an unfavorable DCF gap, or "
+        "What could go wrong, e.g. rich multiples vs peers, an unfavorable DCF gap, or "
         "assumptions that look aggressive given the WACC and terminal growth.\n\n"
         "## Key Risks\n"
         "The concrete downside, quantified with the Monte Carlo VaR/ES where provided, plus "
         "what specifically would invalidate the thesis.\n\n"
         "## Valuation Commentary\n"
         "Interpret the DCF value vs the market price in light of the WACC, terminal growth, "
-        "and the trailing multiples relative to the peer median — note whether the gap is "
+        "and the trailing multiples relative to the peer median, note whether the gap is "
         "driven mainly by the assumptions or by the relative multiples.\n\n"
         "## Catalysts\n"
         "Plausible developments that could narrow the gap between price and intrinsic value; "
@@ -242,7 +244,7 @@ def build_report_prompt(ctx: ThesisContext) -> str:
     return (
         "You are an equity research analyst writing the written analysis for a CONCISE, "
         f"one-page investment report on {ctx.company_name} ({ctx.symbol}). Base your analysis "
-        "ONLY on the figures below — a discounted-cash-flow (DCF) valuation, its gap versus "
+        "ONLY on the figures below: a discounted-cash-flow (DCF) valuation, its gap versus "
         "the current market price, and trading multiples. Reference the ACTUAL numbers (the "
         "DCF value per share, the % gap vs market, the multiples, the WACC) in your "
         "reasoning; do not produce generic boilerplate.\n\n"
@@ -261,7 +263,8 @@ def build_report_prompt(ctx: ThesisContext) -> str:
         "## Key Risks\n"
         "The main risks and what would invalidate the thesis.\n\n"
         "Be specific and cite the figures. Do not add sections beyond these four, and do not "
-        "give a buy/sell recommendation or a price target."
+        "give a buy/sell recommendation or a price target. Do NOT use em dashes (the long "
+        "dash); use commas, colons, or parentheses instead."
     )
 
 

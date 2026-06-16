@@ -62,7 +62,7 @@ def _full_report() -> ReportData:
 
 def test_markdown_has_all_key_sections():
     md = build_markdown(_full_report())
-    assert "# Investment Report — Synthetic Co (SYN)" in md
+    assert "# Investment Report: Synthetic Co (SYN)" in md
     assert "2026-06-10" in md
     assert "## Valuation (DCF)" in md
     assert "150.00 USD" in md            # fair value

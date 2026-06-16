@@ -76,7 +76,7 @@ def run_lbo(a: LBOAssumptions) -> LBOResult:
 
     if sponsor_equity <= 0:
         raise ValueError(
-            "Sponsor equity is non-positive — entry leverage exceeds entry EV plus fees."
+            "Sponsor equity is non-positive: entry leverage exceeds entry EV plus fees."
         )
 
     sources_and_uses = {

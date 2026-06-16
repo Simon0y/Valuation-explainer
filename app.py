@@ -112,7 +112,7 @@ def resolve_gemini_key() -> str | None:
 # --------------------------------------------------------------------------------------
 _BYO_KEY_HINT = (
     " You can paste your own free FMP API key under **Advanced: use your own FMP API key** "
-    "in the sidebar for unlimited access — it stays in your browser session only."
+    "in the sidebar for unlimited access, it stays in your browser session only."
 )
 
 
@@ -132,6 +132,15 @@ def _rate_limit_msg(base: str) -> str:
     return base if _user_fmp_key() else base + _BYO_KEY_HINT
 
 
+def _no_em_dash(text: str) -> str:
+    """Normalize em dashes to commas in generated copy (display punctuation only).
+
+    The Gemini prompt already asks the model to avoid em dashes; this is a backstop so the
+    rendered AI thesis (and its markdown/PDF export) never shows the long dash even if the
+    model slips. Spaces around the dash are absorbed so no double spacing is left behind."""
+    return re.sub(r"\s*—\s*", ", ", text)
+
+
 def _render_byo_key_input() -> None:
     """Render the optional, collapsed 'use your own FMP API key' control.
 
@@ -141,7 +150,7 @@ def _render_byo_key_input() -> None:
     with st.expander("Advanced: use your own FMP API key", expanded=False):
         st.caption(
             "Optional. This app runs on a shared key with caching, so you need nothing to "
-            "get started. If you'd rather not share the quota — or you hit a rate limit — "
+            "get started. If you'd rather not share the quota, or you hit a rate limit, "
             "paste your own free "
             "[Financial Modeling Prep](https://site.financialmodelingprep.com/developer/docs/pricing) "
             "key here and every data call in **this session** will use it instead. Your key "
@@ -236,7 +245,7 @@ def wacc_buildup_md(wacc_result, live_wacc: float | None = None) -> str:
     """
     w = wacc_result
     lines = [
-        "**How the discount rate (WACC) is derived** — from the model's own inputs "
+        "**How the discount rate (WACC) is derived**: from the model's own inputs "
         "(CAPM cost of equity, after-tax cost of debt, blended by market-value weights):",
         "",
         f"- **Cost of equity (CAPM)** = risk-free + β × equity risk premium "
@@ -349,7 +358,7 @@ def render_sidebar_setup(default_key: str | None) -> tuple[str | None, str, int,
             help=(
                 "Requests up to this many years of annual statements. The free FMP tier "
                 "typically returns about 5 years; only the years actually returned are shown "
-                "— never padded or fabricated."
+                "(never padded or fabricated)."
             ),
         )
         go = st.button("Load company", type="primary", disabled=not effective_key)
@@ -387,7 +396,7 @@ def render_sidebar_dcf_controls(
 
         if wacc_result is None:
             st.caption(
-                "A CAPM WACC needs a market cap — unavailable for this ticker, so the DCF "
+                "A CAPM WACC needs a market cap, unavailable for this ticker, so the DCF "
                 "sliders are hidden. (The LBO in the Valuation tab still works.)"
             )
             return False
@@ -428,7 +437,7 @@ def render_sidebar_footer() -> None:
     with st.sidebar:
         st.divider()
         st.caption(
-            "**Educational use only — not investment advice.** Data may be delayed or "
+            "**Educational use only, not investment advice.** Data may be delayed or "
             "incomplete; valuations are illustrative and depend entirely on the assumptions "
             "you set."
         )
@@ -467,7 +476,7 @@ def render_overview_tab(
         for col, (label, display, note) in zip(mcols, mult_rows):
             col.metric(label, display, help=note or None)
         flagged = [
-            f"**{label}** — {note}"
+            f"**{label}**: {note}"
             for label, display, note in mult_rows
             if note and display in ("n/m", "n/a")
         ]
@@ -491,7 +500,7 @@ def render_overview_tab(
     n_years = len(fin.years)
     if n_years < years_to_load:
         st.caption(
-            f"Showing **{n_years}** year(s) — requested {years_to_load}, but the API "
+            f"Showing **{n_years}** year(s), requested {years_to_load}, but the API "
             "returned fewer (common on the free FMP tier). Only the years actually returned "
             "are shown; nothing is padded or fabricated."
         )
@@ -506,7 +515,7 @@ def render_overview_tab(
     st.table(financials_table(fin))
     st.info(
         "**Net debt definition (consistent everywhere):** this app uses **total debt − cash & "
-        "short-term investments** — the same figure the DCF equity bridge uses. FMP's own "
+        "short-term investments**, the same figure the DCF equity bridge uses. FMP's own "
         "`netDebt` field subtracts only *cash & equivalents* (not short-term investments), so "
         "it can differ by tens of billions for cash-rich firms; we deliberately don't use it. "
         "Turning on *Include long-term investments* (sidebar) subtracts those too in the bridge.",
@@ -559,13 +568,13 @@ def _render_dcf(
     if is_financial(profile.sector, profile.industry):
         st.warning(
             f"**A standard DCF doesn't fit {profile.name}.** It's a **financial** "
-            f"({profile.industry}), where debt is part of operations, not financing — so "
+            f"({profile.industry}), where debt is part of operations, not financing, so "
             "*net debt*, *enterprise value* and *unlevered free cash flow* aren't meaningful, "
             "and an FCFF DCF (and EV/EBITDA) would produce a precise-looking but misleading "
             "number. We deliberately don't print a fair value here."
         )
         st.caption(
-            "Banks and insurers are valued differently — e.g. on **P/E** and **price-to-book / "
+            "Banks and insurers are valued differently, e.g. on **P/E** and **price-to-book / "
             "return-on-equity**, or a dividend-discount / excess-return model that works on "
             "equity cash flows directly. See the trailing **P/E** on the Overview tab and the "
             "**Peers** tab for relative context."
@@ -616,7 +625,7 @@ def _render_dcf(
 
     if not value_meaningful:
         st.warning(
-            "This DCF returns a **non-meaningful (negative) fair value** — typically because "
+            "This DCF returns a **non-meaningful (negative) fair value**, typically because "
             "operating margins are negative or financing-style debt dominates the equity "
             "bridge. Treat it as *not meaningful* rather than a price target; a standard FCFF "
             "DCF doesn't fit this company well. The mechanics below still show how it's built."
@@ -647,7 +656,7 @@ def _render_dcf(
         implied_w = implied_wacc_for_price(dcf_assumptions, profile.price)
         if implied_g is not None or implied_w is not None:
             lead = (
-                f"**Reverse DCF — what today's price implies.** To justify today's "
+                f"**Reverse DCF: what today's price implies.** To justify today's "
                 f"{profile.price:,.2f} {cur}, holding your other base-case assumptions fixed, "
                 "the market is pricing in "
             )
@@ -667,12 +676,12 @@ def _render_dcf(
             st.caption(
                 "Solved numerically against this same DCF by bisection (one input at a time, "
                 "everything else held at your base case). It does not change the forward DCF "
-                "above — it just reads off the assumptions the current price embeds."
+                "above, it just reads off the assumptions the current price embeds."
             )
         else:
             st.caption(
                 "**Reverse DCF:** today's price can't be reproduced by this DCF within a sane "
-                "range of revenue growth (−50%…+100%) or WACC alone — the gap is too large to "
+                "range of revenue growth (−50%…+100%) or WACC alone, the gap is too large to "
                 "pin on a single assumption."
             )
 
@@ -691,7 +700,7 @@ def _render_dcf(
     implied_exit = dcf.terminal_value / term_ebitda if term_ebitda > 0 else None
     current_ev_ebitda = _market_multiples(fin).get("EV/EBITDA")
     if implied_exit is not None:
-        st.markdown("**Terminal-value sanity check — implied exit multiple**")
+        st.markdown("**Terminal-value sanity check: implied exit multiple**")
         s1, s2 = st.columns(2)
         s1.metric(
             "Implied terminal EV/EBITDA",
@@ -708,7 +717,7 @@ def _render_dcf(
             "The Gordon-growth terminal value implies selling the business at this "
             "EV/EBITDA in the final forecast year. Well ABOVE today's multiple ⇒ the "
             "terminal value (and fair value) is likely too optimistic; near or below "
-            "today's is more conservative. This is a read-only check — it does not change "
+            "today's is more conservative. This is a read-only check, it does not change "
             "the DCF."
         )
 
@@ -718,7 +727,7 @@ def _render_dcf(
     # ---- Step-by-step walkthrough ----
     with st.expander("Step-by-step walkthrough"):
         st.markdown(
-            "**Step 1 — Forecast unlevered free cash flow (FCFF) for each year.**  \n"
+            "**Step 1: Forecast unlevered free cash flow (FCFF) for each year.**  \n"
             "For every year: `FCFF = EBIT×(1−tax) + D&A − Capex − ΔNWC`."
         )
         fc_rows = {
@@ -745,7 +754,7 @@ def _render_dcf(
 
         a = dcf_assumptions
         st.markdown(
-            f"**Step 2 — Terminal value (Gordon growth).**  \n"
+            f"**Step 2: Terminal value (Gordon growth).**  \n"
             f"`TV = FCFF₍last₎ × (1+g) / (WACC − g)` "
             f"= {fmt_money(dcf.years[-1].fcff)} × (1+{a.terminal_growth:.2%}) / "
             f"({a.wacc:.2%} − {a.terminal_growth:.2%}) = **{fmt_money(dcf.terminal_value)} {cur}**.  \n"
@@ -753,7 +762,7 @@ def _render_dcf(
             f"PV(TV) = **{fmt_money(dcf.pv_terminal_value)} {cur}**."
         )
         st.markdown(
-            "**Step 3 — Bridge to equity value per share.**"
+            "**Step 3: Bridge to equity value per share.**"
         )
         bridge = pd.DataFrame(
             {
@@ -843,7 +852,7 @@ def render_sensitivity_matrix(
     base_col = _argmin_close(wacc_axis, wacc_v)
     base_row = _argmin_close(tg_axis, tg_v)
 
-    st.markdown("**Sensitivity — fair value / share**")
+    st.markdown("**Sensitivity: fair value / share**")
     st.caption(
         "How the DCF value/share moves as WACC (columns) and terminal growth (rows) vary "
         "around your sidebar inputs. The outlined cell is the base case; blank cells are "
@@ -860,7 +869,7 @@ def _render_lbo(fin: CompanyFinancials, cur: str) -> None:
     profile = getattr(fin, "profile", None)
     if profile is not None and is_financial(profile.sector, profile.industry):
         st.warning(
-            f"**An EV/EBITDA LBO doesn't fit {profile.name}** — it's a **financial** "
+            f"**An EV/EBITDA LBO doesn't fit {profile.name}**, it's a **financial** "
             f"({profile.industry}). Banks and insurers aren't bought with EBITDA-based "
             "leverage (debt is their raw material), so this model would be misleading and "
             "isn't shown."
@@ -932,7 +941,7 @@ def _render_lbo(fin: CompanyFinancials, cur: str) -> None:
 
     if lbo is not None:
         with st.expander("Step-by-step walkthrough"):
-            st.markdown("**Step 1 — Sources & Uses** (they must balance).")
+            st.markdown("**Step 1: Sources & Uses** (they must balance).")
             su = lbo.sources_and_uses
             su_df = pd.DataFrame(
                 {
@@ -952,7 +961,7 @@ def _render_lbo(fin: CompanyFinancials, cur: str) -> None:
             st.table(su_df)
 
             st.markdown(
-                "**Step 2 — Debt schedule with 100% cash sweep.**  \n"
+                "**Step 2: Debt schedule with 100% cash sweep.**  \n"
                 "Cash taxes are on `EBITDA − D&A − Interest`, so the **interest tax "
                 "shield** is captured. Free cash flow then sweeps to pay down debt."
             )
@@ -978,7 +987,7 @@ def _render_lbo(fin: CompanyFinancials, cur: str) -> None:
             st.table(pd.DataFrame(rows, index=cols).T)
 
             st.markdown(
-                f"**Step 3 — Exit & returns.**  \n"
+                f"**Step 3: Exit & returns.**  \n"
                 f"Exit EV = exit multiple × exit EBITDA = {lbo_assumptions.exit_ev_ebitda:.1f}× × "
                 f"{fmt_money(lbo.exit_ebitda)} = **{fmt_money(lbo.exit_enterprise_value)} {cur}**.  \n"
                 f"Exit equity = Exit EV − exit net debt ({fmt_money(lbo.exit_net_debt)}) = "
@@ -1000,7 +1009,7 @@ def _render_lbo(fin: CompanyFinancials, cur: str) -> None:
 def render_coming_soon(title: str, blurb: str, planned: list[str]) -> None:
     st.subheader(title)
     st.caption(blurb)
-    st.info(f"**{title} — coming soon.** This panel is wired into the layout and awaits its engine.")
+    st.info(f"**{title}: coming soon.** This panel is wired into the layout and awaits its engine.")
     st.markdown("**Planned:**")
     for item in planned:
         st.markdown(f"- {item}")
@@ -1018,7 +1027,7 @@ def render_risk_tab(api_key: str, fin: CompanyFinancials) -> None:
 
     st.subheader("Risk")
     st.caption(
-        "Monte Carlo **price risk** — 10,000 simulated 1-year price paths via Geometric "
+        "Monte Carlo **price risk**: 10,000 simulated 1-year price paths via Geometric "
         "Brownian Motion, with drift and volatility estimated from this stock's own daily "
         "history. This is **market-price risk**, separate from the DCF fundamental value."
     )
@@ -1027,7 +1036,7 @@ def render_risk_tab(api_key: str, fin: CompanyFinancials) -> None:
         with st.spinner(f"Loading price history for {sym}…"):
             prices = load_price_history(api_key, sym)
     except FMPRateLimitError:
-        st.info(_rate_limit_msg("Price data unavailable (provider rate limit) — try again later."))
+        st.info(_rate_limit_msg("Price data unavailable (provider rate limit), try again later."))
         return
     except (FMPAuthError, FMPPlanError, FMPNotFound, FMPError):
         st.warning("Price data unavailable for this ticker.")
@@ -1096,7 +1105,7 @@ def _render_price_risk(sym: str, currency: str, prices: list[float]) -> None:
     # Plain-language reading of the two headline numbers.
     st.markdown(
         f"Over the next year, there's a **5% chance {sym} falls to "
-        f"{res.var_price:,.2f}{cur_lbl} or below** (a **{res.var_pct:.1%}** loss — the 95% "
+        f"{res.var_price:,.2f}{cur_lbl} or below** (a **{res.var_pct:.1%}** loss, the 95% "
         f"VaR). *If* it lands in that worst-5% tail, the **average** outcome is "
         f"{res.es_price:,.2f}{cur_lbl}, a **{res.es_pct:.1%}** loss (the Expected "
         f"Shortfall, which by definition sits deeper in the tail than VaR)."
@@ -1107,7 +1116,7 @@ def _render_price_risk(sym: str, currency: str, prices: list[float]) -> None:
         f"Estimated annualized volatility **{ann_vol:.1%}** (from {res.params.n_returns:,} "
         f"daily log returns); {res.n_paths:,} GBM paths, 252 trading days, 95% confidence. "
         "**Honest labelling:** this is market-price risk simulated from historical "
-        "volatility (Geometric Brownian Motion) — it is *separate* from the DCF fundamental "
+        "volatility (Geometric Brownian Motion), it is *separate* from the DCF fundamental "
         "valuation and answers a different question (how the share *price* might move, not "
         "what the business is worth). GBM assumes **lognormal returns and constant "
         "volatility**, so it has no fat tails or volatility clustering and will understate "
@@ -1310,8 +1319,8 @@ def render_ai_insights_tab(
 
     st.subheader("AI Insights")
     st.caption(
-        "An AI-generated research note — **Investment Thesis · Bull Case · Bear Case · Key "
-        "Risks · Valuation Commentary · Catalysts** — grounded in this company's DCF value "
+        "An AI-generated research note: **Investment Thesis · Bull Case · Bear Case · Key "
+        "Risks · Valuation Commentary · Catalysts**, grounded in this company's DCF value "
         "and gap vs market, WACC and growth/margin assumptions, trailing multiples vs peers, "
         "and Monte Carlo VaR/ES. Generated by Google Gemini."
     )
@@ -1343,7 +1352,7 @@ def render_ai_insights_tab(
         ctx, _ = _build_thesis_context(api_key, fin, wacc_result, include_lt_inv)
         try:
             with st.spinner("Generating thesis with Gemini…"):
-                thesis = generate_ai_thesis(ctx, gemini_key)
+                thesis = _no_em_dash(generate_ai_thesis(ctx, gemini_key))
             st.session_state[store_key] = thesis
             st.session_state["_ai_news_included"] = ctx.news_included
             st.session_state["_ai_gen_count"] = used + 1
@@ -1407,7 +1416,7 @@ def _render_ai_thesis(thesis: str, news_included: bool) -> None:
              "numbers alone."
     )
     st.caption(
-        f"**AI-generated; educational use only — not investment advice.** {note} "
+        f"**AI-generated; educational use only, not investment advice.** {note} "
         "AI output can be wrong or out of date; verify independently."
     )
 
@@ -1440,7 +1449,7 @@ def render_peers_tab(api_key: str, fin: CompanyFinancials) -> None:
 
     st.subheader("Peers")
     st.caption(
-        "Relative valuation — each bubble is a company: **X = trailing P/E (TTM)**, "
+        "Relative valuation: each bubble is a company: **X = trailing P/E (TTM)**, "
         "**Y = revenue growth (YoY)**, **bubble size = market cap**. "
         f"The amber bubble is **{sym}**; peers are grey."
     )
@@ -1449,7 +1458,7 @@ def render_peers_tab(api_key: str, fin: CompanyFinancials) -> None:
         with st.spinner(f"Finding peers for {sym} and pulling their metrics…"):
             comp = load_peer_comparison(api_key, sym)
     except FMPRateLimitError:
-        st.info(_rate_limit_msg("Peer data temporarily unavailable (provider rate limit) — try again later."))
+        st.info(_rate_limit_msg("Peer data temporarily unavailable (provider rate limit), try again later."))
         return
     except (FMPAuthError, FMPPlanError, FMPNotFound, FMPError) as exc:
         st.error(f"Couldn't load peers: {exc}")
@@ -1525,18 +1534,18 @@ def _render_peer_comparison(sym: str, comp: PeerComparison) -> None:
     if target is None:
         st.warning(
             f"**{sym}** itself is missing a usable P/E or revenue growth, so it isn't on the "
-            "chart — only its peers are shown."
+            "chart, only its peers are shown."
         )
     if len(peers) < 3:
         st.info(
-            f"Only **{len(peers)}** peer(s) returned usable data — too few for a confident "
+            f"Only **{len(peers)}** peer(s) returned usable data, too few for a confident "
             "comparison. Read the positioning as indicative, not definitive."
         )
 
     src_label = {"stock-peers": "FMP stock-peers", "screener": "sector/industry screener"}.get(
         source, source
     )
-    note = f"Peers via **{src_label}**. P/E is **trailing (TTM)** — the free tier exposes no forward estimate."
+    note = f"Peers via **{src_label}**. P/E is **trailing (TTM)**, the free tier exposes no forward estimate."
     if skipped:
         note += f" {skipped} compan{'y' if skipped == 1 else 'ies'} skipped for missing/garbage data."
     st.caption(note)
@@ -1616,7 +1625,7 @@ def _ensure_report_thesis(
         }
     try:
         ctx, _ = _build_thesis_context(api_key, fin, wacc_result, include_lt_inv)
-        thesis = generate_report_thesis(ctx, gemini_key)
+        thesis = _no_em_dash(generate_report_thesis(ctx, gemini_key))
         return {"thesis": thesis, "note": None, "news": ctx.news_included}
     except AIRateLimitError:
         return {"thesis": None,
@@ -1640,7 +1649,7 @@ def _render_export_section(
     st.divider()
     st.subheader("Export Investment Report")
     st.caption(
-        "A clean, single-page analyst report — DCF summary, key multiples, a peer takeaway, "
+        "A clean, single-page analyst report: DCF summary, key multiples, a peer takeaway, "
         "Monte Carlo risk, and an AI investment thesis (Investment Thesis · Bull · Bear · "
         "Key Risks). The thesis is generated on demand when you build the PDF."
     )
@@ -1689,7 +1698,7 @@ def _render_export_section(
                 key="dl_report_pdf",
             )
         elif st.session_state.get("gen_report_pdf"):
-            st.caption("PDF export isn't available in this environment — use Markdown.")
+            st.caption("PDF export isn't available in this environment, use Markdown.")
 
 
 # ======================================================================================
@@ -1698,7 +1707,7 @@ def _render_export_section(
 def main() -> None:
     st.title("Valuation Explainer")
     st.caption(
-        "Institutional valuation terminal — learn **DCF** and **LBO** on a real company, "
+        "Institutional valuation terminal, learn **DCF** and **LBO** on a real company, "
         "every term explained in plain language. _Educational use only; not investment advice._"
     )
 
@@ -1742,7 +1751,7 @@ def main() -> None:
         return
     except FMPNotFound as exc:
         render_sidebar_footer()
-        st.error(f"{exc} — is the ticker correct?")
+        st.error(f"{exc} Is the ticker correct?")
         return
 
     if not fin.years:
