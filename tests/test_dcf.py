@@ -90,3 +90,44 @@ def test_dcf_requires_wacc_above_terminal_growth():
     bad = DCFAssumptions(**{**bad.__dict__, "wacc": 0.02, "terminal_growth": 0.03})
     with pytest.raises(ValueError):
         run_dcf(bad)
+
+
+# ======================================================================================
+# Reverse DCF — implied growth / WACC from a target price (numerical, fail-soft)
+# ======================================================================================
+from dataclasses import replace
+
+from engine.dcf import implied_growth_for_price, implied_wacc_for_price
+
+
+def test_implied_growth_round_trips_through_run_dcf():
+    base = base_assumptions()
+    # Pick a target produced by a known growth, then recover that growth from the price.
+    target = run_dcf(replace(base, revenue_growth=0.18)).value_per_share
+    g = implied_growth_for_price(base, target)
+    assert g is not None
+    assert math.isclose(g, 0.18, abs_tol=1e-3)
+    # Plugging it back reproduces the target price.
+    assert math.isclose(
+        run_dcf(replace(base, revenue_growth=g, revenue_growth_path=None)).value_per_share,
+        target, abs_tol=1e-2,
+    )
+
+
+def test_implied_wacc_round_trips_and_is_monotonic():
+    base = base_assumptions()
+    target = run_dcf(replace(base, wacc=0.12)).value_per_share
+    w = implied_wacc_for_price(base, target)
+    assert w is not None
+    assert math.isclose(w, 0.12, abs_tol=1e-3)
+    assert math.isclose(run_dcf(replace(base, wacc=w)).value_per_share, target, abs_tol=1e-2)
+
+
+def test_reverse_dcf_fails_soft_when_price_unreachable():
+    base = base_assumptions()
+    # No sane growth (≤+100%) or WACC (>terminal growth) reproduces an absurd price.
+    assert implied_growth_for_price(base, 1e12) is None
+    assert implied_wacc_for_price(base, 1e12) is None
+    # A price at/below the current value is also unreachable by raising growth alone here
+    # only if outside the band; a clearly-negative target is never bracketed.
+    assert implied_growth_for_price(base, -100.0) is None

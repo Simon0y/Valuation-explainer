@@ -50,10 +50,11 @@ from engine.defaults import (
     default_lbo_assumptions,
     default_wacc,
 )
-from engine.dcf import run_dcf
+from engine.dcf import run_dcf, implied_growth_for_price, implied_wacc_for_price
 from engine.lbo import run_lbo
 from engine.models import CompanyFinancials
 from engine.montecarlo import run_price_risk
+from engine.sectors import is_financial
 
 st.set_page_config(page_title="Valuation Explainer", page_icon="▪", layout="wide")
 ui_theme.inject_css()
@@ -383,6 +384,26 @@ def render_overview_tab(
         p3.metric(f"Latest EBITDA ({cur})", fmt_compact(latest.ebitda))
         p4.metric("Net debt (bridge)", fmt_compact(latest.net_debt_for_bridge(False)))
 
+    # ---- Trailing multiples — honest "n/m" / "n/a" instead of negative or absurd ratios ----
+    mult_rows = _multiples_readout(fin)
+    if mult_rows:
+        st.markdown("**Trailing multiples**")
+        mcols = st.columns(len(mult_rows))
+        for col, (label, display, note) in zip(mcols, mult_rows):
+            col.metric(label, display, help=note or None)
+        flagged = [
+            f"**{label}** — {note}"
+            for label, display, note in mult_rows
+            if note and display in ("n/m", "n/a")
+        ]
+        caption = (
+            "Trailing (TTM/latest fiscal year), derived from data already in hand. "
+            "**n/m** = not meaningful (e.g. negative earnings/EBITDA); **n/a** = doesn't apply."
+        )
+        if flagged:
+            caption += "  " + " · ".join(flagged) + "."
+        st.caption(caption)
+
     if profile.description:
         with st.expander("What does this company do?", expanded=False):
             st.write(profile.description)
@@ -456,6 +477,27 @@ def _render_dcf(
         )
         return
 
+    # Financials (banks/insurers): a textbook unlevered-FCFF DCF and EV/EBITDA do not apply —
+    # debt is raw material rather than financing, so "net debt", the EV→equity bridge and FCFF
+    # itself are not meaningful. Show an honest note INSTEAD of a precise-looking but
+    # misleading fair value, and clear any stale DCF snapshot so the PDF/AI don't carry one.
+    if is_financial(profile.sector, profile.industry):
+        st.warning(
+            f"**A standard DCF doesn't fit {profile.name}.** It's a **financial** "
+            f"({profile.industry}), where debt is part of operations, not financing — so "
+            "*net debt*, *enterprise value* and *unlevered free cash flow* aren't meaningful, "
+            "and an FCFF DCF (and EV/EBITDA) would produce a precise-looking but misleading "
+            "number. We deliberately don't print a fair value here."
+        )
+        st.caption(
+            "Banks and insurers are valued differently — e.g. on **P/E** and **price-to-book / "
+            "return-on-equity**, or a dividend-discount / excess-return model that works on "
+            "equity cash flows directly. See the trailing **P/E** on the Overview tab and the "
+            "**Peers** tab for relative context."
+        )
+        st.session_state.pop("_report_valuation", None)
+        return
+
     # Read the (possibly user-adjusted) slider values seeded into the sidebar.
     wacc_v = st.session_state["dcf_wacc"]
     tg_v = st.session_state["dcf_tg"]
@@ -477,9 +519,15 @@ def _render_dcf(
         st.caption("Adjust the DCF assumption sliders in the sidebar to fix this combination.")
         return
 
+    price_ok = profile.price is not None and profile.price > 0
+    # A negative fair value (e.g. negative operating margins, or financing-style debt
+    # dominating the equity bridge) is NOT a price target — don't dress it up with an
+    # "upside %" verdict. Show the number, but flag it as not meaningful.
+    value_meaningful = dcf.value_per_share > 0
+
     # ---- Headline (progressive disclosure: number first) ----
     m1, m2, m3 = st.columns(3)
-    if profile.price is not None and profile.price > 0:
+    if price_ok and value_meaningful:
         upside = dcf.value_per_share / profile.price - 1.0
         m1.metric(
             f"DCF value / share ({cur})",
@@ -491,17 +539,67 @@ def _render_dcf(
     m2.metric(f"Enterprise value ({cur})", fmt_compact(dcf.enterprise_value))
     m3.metric(f"Equity value ({cur})", fmt_compact(dcf.equity_value))
 
+    if not value_meaningful:
+        st.warning(
+            "This DCF returns a **non-meaningful (negative) fair value** — typically because "
+            "operating margins are negative or financing-style debt dominates the equity "
+            "bridge. Treat it as *not meaningful* rather than a price target; a standard FCFF "
+            "DCF doesn't fit this company well. The mechanics below still show how it's built."
+        )
+
     # Snapshot the already-computed DCF for the Export feature (Stage 6). This only records
-    # values for packaging; it does not change the valuation or this tab's behavior.
-    st.session_state["_report_valuation"] = {
-        "value_per_share": dcf.value_per_share,
-        "upside": (dcf.value_per_share / profile.price - 1.0)
-        if (profile.price and profile.price > 0) else None,
-        "enterprise_value": dcf.enterprise_value,
-        "equity_value": dcf.equity_value,
-        "wacc": dcf.assumptions.wacc,
-        "terminal_growth": dcf.assumptions.terminal_growth,
-    }
+    # values for packaging; it does not change the valuation or this tab's behavior. We skip
+    # the snapshot when the value isn't meaningful so the PDF/AI never carry a negative
+    # "fair value" or a bogus upside.
+    if value_meaningful:
+        st.session_state["_report_valuation"] = {
+            "value_per_share": dcf.value_per_share,
+            "upside": (dcf.value_per_share / profile.price - 1.0) if price_ok else None,
+            "enterprise_value": dcf.enterprise_value,
+            "equity_value": dcf.equity_value,
+            "wacc": dcf.assumptions.wacc,
+            "terminal_growth": dcf.assumptions.terminal_growth,
+        }
+    else:
+        st.session_state.pop("_report_valuation", None)
+
+    # ---- Reverse DCF: what does today's market price imply? ----
+    # Reframes a large gap as the market's implied assumptions instead of implying the model
+    # is "wrong". Solved numerically against THIS same DCF (one input at a time, all else
+    # fixed); fails soft when the price can't be reproduced within a sane range.
+    if price_ok and value_meaningful:
+        implied_g = implied_growth_for_price(dcf_assumptions, profile.price)
+        implied_w = implied_wacc_for_price(dcf_assumptions, profile.price)
+        if implied_g is not None or implied_w is not None:
+            lead = (
+                f"**Reverse DCF — what today's price implies.** To justify today's "
+                f"{profile.price:,.2f} {cur}, holding your other base-case assumptions fixed, "
+                "the market is pricing in "
+            )
+            if implied_g is not None and implied_w is not None:
+                body = (
+                    f"~**{implied_g:.1%}** annual revenue growth (vs your ~{growth_v:.1%} base "
+                    f"case), or a WACC of ~**{implied_w:.1%}** (vs your ~{wacc_v:.1%})."
+                )
+            elif implied_g is not None:
+                body = (
+                    f"~**{implied_g:.1%}** annual revenue growth (vs your ~{growth_v:.1%} "
+                    "base case)."
+                )
+            else:
+                body = f"a WACC of ~**{implied_w:.1%}** (vs your ~{wacc_v:.1%} base case)."
+            st.markdown(lead + body)
+            st.caption(
+                "Solved numerically against this same DCF by bisection (one input at a time, "
+                "everything else held at your base case). It does not change the forward DCF "
+                "above — it just reads off the assumptions the current price embeds."
+            )
+        else:
+            st.caption(
+                "**Reverse DCF:** today's price can't be reproduced by this DCF within a sane "
+                "range of revenue growth (−50%…+100%) or WACC alone — the gap is too large to "
+                "pin on a single assumption."
+            )
 
     st.plotly_chart(ui.dcf_waterfall(dcf, cur), use_container_width=True)
 
@@ -684,6 +782,16 @@ def render_sensitivity_matrix(
 
 # ----------------------------------------------------------------------------- LBO
 def _render_lbo(fin: CompanyFinancials, cur: str) -> None:
+    profile = getattr(fin, "profile", None)
+    if profile is not None and is_financial(profile.sector, profile.industry):
+        st.warning(
+            f"**An EV/EBITDA LBO doesn't fit {profile.name}** — it's a **financial** "
+            f"({profile.industry}). Banks and insurers aren't bought with EBITDA-based "
+            "leverage (debt is their raw material), so this model would be misleading and "
+            "isn't shown."
+        )
+        return
+
     seed_lbo = default_lbo_assumptions(fin)
     if seed_lbo is None:
         st.warning("Not enough data to build an LBO (need positive EBITDA and a market cap).")
@@ -944,6 +1052,11 @@ def _compute_dcf_result(fin: CompanyFinancials, include_lt_inv: bool, wacc_resul
     None (never raises) if WACC/sliders/data aren't ready for a DCF."""
     if wacc_result is None:
         return None
+    # Financials: a standard FCFF DCF is not meaningful (see _render_dcf). Don't feed a
+    # misleading fair value into the AI thesis / report either.
+    profile = getattr(fin, "profile", None)
+    if profile is not None and is_financial(profile.sector, profile.industry):
+        return None
     keys = ("dcf_wacc", "dcf_tg", "dcf_growth", "dcf_margin")
     if not all(k in st.session_state for k in keys):
         return None
@@ -974,23 +1087,78 @@ def _market_multiples(fin: CompanyFinancials) -> dict[str, float]:
     if profile is None or latest is None:
         return multiples
 
+    financial = is_financial(profile.sector, profile.industry)
     mcap = profile.market_cap
     # Net income = pre-tax income − tax expense (both as reported).
     net_income = None
     if latest.income_before_tax is not None and latest.income_tax_expense is not None:
         net_income = latest.income_before_tax - latest.income_tax_expense
 
+    # P/E is meaningful for financials too, but only with positive earnings.
     if mcap and net_income and net_income > 0:
         multiples["Trailing P/E"] = mcap / net_income
 
+    # EV-based multiples don't apply to financials (debt is operational, so "net debt" and
+    # therefore enterprise value are not meaningful) — omit them rather than mislead.
     net_debt = latest.derived_net_debt
-    if mcap and net_debt is not None:
+    if mcap and net_debt is not None and not financial:
         ev = mcap + net_debt
         if latest.ebitda and latest.ebitda > 0:
             multiples["EV/EBITDA"] = ev / latest.ebitda
         if latest.revenue and latest.revenue > 0:
             multiples["EV/Sales"] = ev / latest.revenue
     return multiples
+
+
+def _multiples_readout(fin: CompanyFinancials) -> list[tuple[str, str, str | None]]:
+    """Trailing multiples formatted for display, honest about when they are NOT meaningful.
+
+    Returns ``[(label, display, note), ...]`` where ``display`` is e.g. ``"28.4x"``, or
+    ``"n/m"`` (not meaningful — negative earnings/EBITDA), ``"n/a"`` (doesn't apply —
+    financials), or ``"—"`` (data missing). A negative or absurd ratio is never shown as if
+    it were a real multiple. Read-only: derived from data already in hand."""
+    profile = getattr(fin, "profile", None)
+    latest = fin.latest
+    if profile is None or latest is None:
+        return []
+
+    financial = is_financial(profile.sector, profile.industry)
+    mcap = profile.market_cap
+    net_income = None
+    if latest.income_before_tax is not None and latest.income_tax_expense is not None:
+        net_income = latest.income_before_tax - latest.income_tax_expense
+    net_debt = latest.derived_net_debt
+    ev = (mcap + net_debt) if (mcap is not None and net_debt is not None) else None
+
+    rows: list[tuple[str, str, str | None]] = []
+
+    # Trailing P/E — valid for financials, but n/m on a loss.
+    if mcap is None or net_income is None:
+        rows.append(("Trailing P/E", "—", "data unavailable"))
+    elif net_income <= 0:
+        rows.append(("Trailing P/E", "n/m", "negative earnings"))
+    else:
+        rows.append(("Trailing P/E", f"{mcap / net_income:,.1f}x", None))
+
+    # EV/EBITDA — does not apply to financials; n/m on negative EBITDA.
+    if financial:
+        rows.append(("EV/EBITDA", "n/a", "not meaningful for financials"))
+    elif ev is None or latest.ebitda is None:
+        rows.append(("EV/EBITDA", "—", "data unavailable"))
+    elif latest.ebitda <= 0:
+        rows.append(("EV/EBITDA", "n/m", "negative EBITDA"))
+    else:
+        rows.append(("EV/EBITDA", f"{ev / latest.ebitda:,.1f}x", None))
+
+    # EV/Sales — same enterprise-value caveat for financials.
+    if financial:
+        rows.append(("EV/Sales", "n/a", "not meaningful for financials"))
+    elif ev is None or not latest.revenue or latest.revenue <= 0:
+        rows.append(("EV/Sales", "—", "data unavailable"))
+    else:
+        rows.append(("EV/Sales", f"{ev / latest.revenue:,.1f}x", None))
+
+    return rows
 
 
 def _build_thesis_context(
@@ -1518,4 +1686,5 @@ def main() -> None:
     _render_export_section(api_key, fin, wacc_result, include_lt_inv)
 
 
-main()
+if __name__ == "__main__":
+    main()

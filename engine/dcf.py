@@ -41,6 +41,9 @@ ASSUMPTIONS (flagged):
 
 from __future__ import annotations
 
+from dataclasses import replace
+from typing import Callable, Optional
+
 from engine.models import DCFAssumptions, DCFResult, DCFYear
 
 
@@ -129,3 +132,93 @@ def run_dcf(a: DCFAssumptions) -> DCFResult:
         assumptions=a,
         notes=notes,
     )
+
+
+# ======================================================================================
+# Reverse DCF — what does today's market price imply?
+# ======================================================================================
+# These solvers wrap the SAME `run_dcf` above (the forward DCF math is never touched). They
+# answer: holding every other base-case assumption fixed, what single input makes the DCF
+# fair value equal the current market price? Solved numerically by bisection, fail-soft.
+
+
+def _solve_assumption(
+    base: DCFAssumptions,
+    target_price: float,
+    apply: Callable[[float], DCFAssumptions],
+    lo: float,
+    hi: float,
+    *,
+    increasing: bool,
+    tol: float = 1e-4,
+    max_iter: int = 200,
+) -> Optional[float]:
+    """Bisect for the scalar input x that makes ``run_dcf`` value/share == ``target_price``.
+
+    ``apply(x)`` returns a ``DCFAssumptions`` with the swept input set to x and everything
+    else held at ``base``. ``increasing`` says whether value/share rises with x (True for
+    revenue growth, False for WACC). Returns None — never raises — when the target isn't
+    bracketed by ``[lo, hi]`` or any evaluation is invalid, so the caller can say "no
+    solution in a sane range" instead of showing a bogus number.
+    """
+    def value_at(x: float) -> Optional[float]:
+        try:
+            return run_dcf(apply(x)).value_per_share
+        except (ValueError, ZeroDivisionError):
+            return None
+
+    f_lo = value_at(lo)
+    f_hi = value_at(hi)
+    if f_lo is None or f_hi is None:
+        return None
+    # The root must be bracketed for bisection to be valid.
+    if not (min(f_lo, f_hi) <= target_price <= max(f_lo, f_hi)):
+        return None
+
+    for _ in range(max_iter):
+        mid = 0.5 * (lo + hi)
+        f_mid = value_at(mid)
+        if f_mid is None:
+            return None
+        if abs(f_mid - target_price) <= tol or (hi - lo) < 1e-9:
+            return mid
+        # Keep the half-interval that still brackets the target, honoring monotonicity.
+        if (f_mid > target_price) == increasing:
+            hi = mid
+        else:
+            lo = mid
+    return 0.5 * (lo + hi)
+
+
+def implied_growth_for_price(
+    base: DCFAssumptions,
+    target_price: float,
+    lo: float = -0.50,
+    hi: float = 1.00,
+) -> Optional[float]:
+    """Annual revenue growth (one rate, all forecast years) that makes the DCF fair value
+    equal ``target_price``, holding every other base-case assumption fixed. Searches a sane
+    band of [-50%, +100%]; returns None if no solution lies within it. Value/share rises
+    monotonically with growth, so bisection is well-posed."""
+    def apply(g: float) -> DCFAssumptions:
+        return replace(base, revenue_growth=g, revenue_growth_path=None)
+
+    return _solve_assumption(base, target_price, apply, lo, hi, increasing=True)
+
+
+def implied_wacc_for_price(
+    base: DCFAssumptions,
+    target_price: float,
+    hi: float = 0.60,
+) -> Optional[float]:
+    """WACC that makes the DCF fair value equal ``target_price``, holding everything else
+    fixed. Searches (terminal_growth, hi]; value/share falls monotonically as WACC rises.
+    Returns None if no solution lies in range (e.g. price unreachable even at 60% WACC)."""
+    lo = base.terminal_growth + 1e-4
+    if hi <= lo:
+        return None
+
+    def apply(w: float) -> DCFAssumptions:
+        return replace(base, wacc=w)
+
+    return _solve_assumption(base, target_price, apply, lo, hi, increasing=False)
