@@ -46,6 +46,11 @@ from typing import Callable, Optional
 
 from engine.models import DCFAssumptions, DCFResult, DCFYear
 
+# Public API of this module. `run_dcf` is the forward DCF; the `implied_*` helpers are the
+# reverse-DCF solvers that wrap it. Declared explicitly so the reverse-DCF functions are an
+# intentional, documented part of the engine's surface (and `from engine.dcf import *` works).
+__all__ = ["run_dcf", "implied_growth_for_price", "implied_wacc_for_price"]
+
 
 def run_dcf(a: DCFAssumptions) -> DCFResult:
     """Run the DCF and return the full result with every intermediate number."""
