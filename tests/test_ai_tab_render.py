@@ -191,4 +191,5 @@ def test_ai_tab_without_key_shows_enable_message(monkeypatch):
     assert not at.exception
 
     info = "\n".join(i.value for i in at.info)
-    assert "Gemini API key" in info
+    # Calm, non-alarming note (no red traceback, no instruction to open secrets.toml).
+    assert "AI thesis unavailable (no key configured)" in info

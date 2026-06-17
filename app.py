@@ -77,28 +77,46 @@ def _read_dotenv(path: str = ".env") -> dict[str, str]:
     return values
 
 
-def resolve_api_key() -> str | None:
+def get_secret(name: str) -> str | None:
+    """Safely resolve one secret by name, in order: Streamlit secrets -> env var -> .env.
+
+    Returns None if the secret is missing everywhere. This is the SINGLE entry point for
+    reading any secret in the app — nothing else should touch ``st.secrets`` directly.
+
+    Why a guarded helper: on Streamlit Cloud there is no ``.streamlit/secrets.toml`` (secrets
+    live in the app's *settings*), and touching ``st.secrets`` when no secrets are configured
+    raises (``StreamlitSecretNotFoundError`` on modern Streamlit, a raw ``FileNotFoundError``
+    on older ones). We never open ``.streamlit/secrets.toml`` ourselves; we let Streamlit
+    resolve it and swallow ANY failure so a missing key/file degrades to None instead of a
+    red traceback on startup or any tab.
+    """
+    # 1) Streamlit secrets — Cloud app settings, or a local secrets.toml if one happens to
+    #    exist. Both the membership test and the lookup can raise when nothing is configured,
+    #    so the whole access is guarded.
     try:
-        if "FMP_API_KEY" in st.secrets:
-            return st.secrets["FMP_API_KEY"]
-    except Exception:
+        if name in st.secrets:
+            val = st.secrets[name]
+            if val:
+                return str(val)
+    except Exception:  # noqa: BLE001 — a missing secret/file must NEVER crash the app
         pass
-    if os.environ.get("FMP_API_KEY"):
-        return os.environ["FMP_API_KEY"]
-    return _read_dotenv().get("FMP_API_KEY")
+    # 2) Process environment.
+    env_val = os.environ.get(name)
+    if env_val:
+        return env_val
+    # 3) Local .env (developer convenience; absent in production).
+    return _read_dotenv().get(name) or None
+
+
+def resolve_api_key() -> str | None:
+    """Resolve the FMP API key via the safe ``get_secret`` helper (None if absent)."""
+    return get_secret("FMP_API_KEY")
 
 
 def resolve_gemini_key() -> str | None:
-    """Resolve the Gemini API key: st.secrets -> env var -> .env. Never hardcoded; the
-    real key lives only in the gitignored secrets file / environment."""
-    try:
-        if "GEMINI_API_KEY" in st.secrets:
-            return st.secrets["GEMINI_API_KEY"]
-    except Exception:
-        pass
-    if os.environ.get("GEMINI_API_KEY"):
-        return os.environ["GEMINI_API_KEY"]
-    return _read_dotenv().get("GEMINI_API_KEY")
+    """Resolve the Gemini API key via the safe ``get_secret`` helper (None if absent).
+    Never hardcoded; the real key lives only in the app's secrets / environment."""
+    return get_secret("GEMINI_API_KEY")
 
 
 # --------------------------------------------------------------------------------------
@@ -1328,9 +1346,9 @@ def render_ai_insights_tab(
     gemini_key = resolve_gemini_key()
     if not gemini_key:
         st.info(
-            "**Add a Gemini API key to enable this.** Put `GEMINI_API_KEY = \"…\"` in "
-            "`.streamlit/secrets.toml` (gitignored) or set the `GEMINI_API_KEY` environment "
-            "variable. Get a free key at https://aistudio.google.com/apikey."
+            "AI thesis unavailable (no key configured). Everything else on this page works "
+            "normally. To enable it, add a `GEMINI_API_KEY` to the app's secrets or your "
+            "environment — get a free key at https://aistudio.google.com/apikey."
         )
         return
 
@@ -1357,7 +1375,7 @@ def render_ai_insights_tab(
             st.session_state["_ai_news_included"] = ctx.news_included
             st.session_state["_ai_gen_count"] = used + 1
         except AIKeyError:
-            st.info("Add a Gemini API key to enable this.")
+            st.info("AI thesis unavailable (no key configured).")
             return
         except AIRateLimitError:
             st.warning("AI temporarily unavailable, try again. (Gemini rate limit hit.)")
