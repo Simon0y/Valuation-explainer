@@ -586,6 +586,77 @@ def render_valuation_tab(
 
 
 # ----------------------------------------------------------------------------- DCF
+def _render_dcf_model_details(dcf, cur: str) -> None:
+    """Render the full DCF build so every number traces from assumptions to value/share.
+
+    READ-ONLY surfacing of intermediates the engine already computed (``DCFResult``): no
+    finance math happens here. Formatting matches the rest of the app — tabular, with
+    accounting-style negatives (parentheses) for the cash the engine subtracts.
+    """
+    a = dcf.assumptions
+
+    # Year-by-year forecast — one column per forecast year, rows in build order.
+    fc_rows: dict[str, list[str]] = {
+        "Revenue": [],
+        "EBIT": [],
+        "NOPAT (EBIT after tax)": [],
+        "+ D&A": [],
+        "− Capex": [],
+        "− Δ Net working capital": [],
+        "= Unlevered FCFF": [],
+        "Discount factor": [],
+        "PV of FCFF": [],
+    }
+    cols: list[str] = []
+    for y in dcf.years:
+        cols.append(f"Year {y.year}")
+        fc_rows["Revenue"].append(fmt_money(y.revenue))
+        fc_rows["EBIT"].append(fmt_money(y.ebit))
+        fc_rows["NOPAT (EBIT after tax)"].append(fmt_money(y.nopat))
+        fc_rows["+ D&A"].append(fmt_money(y.depreciation_amortization))
+        fc_rows["− Capex"].append(fmt_money(-y.capex))                 # outflow → negative
+        fc_rows["− Δ Net working capital"].append(fmt_money(-y.change_in_nwc))  # use of cash
+        fc_rows["= Unlevered FCFF"].append(fmt_money(y.fcff))
+        fc_rows["Discount factor"].append(f"{y.discount_factor:.4f}")
+        fc_rows["PV of FCFF"].append(fmt_money(y.pv_fcff))
+    st.markdown(f"**Forecast — unlevered FCFF by year ({cur})**")
+    st.table(pd.DataFrame(fc_rows, index=cols).T)
+
+    # Bridge — Σ PV(FCFF) + PV(TV) = EV − net debt = equity ÷ shares = value/share.
+    st.markdown(f"**From cash flows to value per share ({cur})**")
+    bridge = pd.DataFrame(
+        {
+            "Value": [
+                fmt_money(dcf.sum_pv_fcff),
+                fmt_money(dcf.terminal_value),
+                fmt_money(dcf.pv_terminal_value),
+                fmt_money(dcf.enterprise_value),
+                fmt_money(-dcf.net_debt),
+                fmt_money(dcf.equity_value),
+                f"{dcf.shares_outstanding:,.0f}",
+                f"{dcf.value_per_share:,.2f}",
+            ]
+        },
+        index=[
+            "Σ PV of forecast FCFF",
+            f"Terminal value (undiscounted, Gordon g∞ = {a.terminal_growth:.2%})",
+            "+ PV of terminal value",
+            "= Enterprise value",
+            "− Net debt",
+            "= Equity value",
+            "÷ Shares outstanding",
+            "= Value per share",
+        ],
+    )
+    st.table(bridge)
+    st.caption(
+        "Built entirely from the DCF above — the bottom-line **value per share ties exactly "
+        "to the headline**. Capex, ΔNWC and net debt show as the cash outflows/claims the "
+        "engine subtracts (accounting negatives in parentheses); terminal value is shown "
+        "undiscounted with its present value on the next line."
+    )
+
+
 def _render_dcf(
     fin: CompanyFinancials, profile, cur: str, include_lt_inv: bool, wacc_result, dcf_ready: bool
 ) -> None:
@@ -728,6 +799,15 @@ def _render_dcf(
     st.plotly_chart(ui.dcf_waterfall(dcf, cur), use_container_width=True)
 
     ui.term_row(["fcff", "wacc", "terminal_value", "ev", "net_debt"])
+
+    # ---- Model Details: the full DCF build, traced from assumptions to value/share ----
+    with st.expander("Model Details — full DCF build (year by year)"):
+        st.caption(
+            "Every intermediate the DCF already computes, from each forecast year's revenue "
+            "down to the per-share value, so nothing is a black box. Read-only: it restates "
+            "the same computation behind the headline and does not change any number."
+        )
+        _render_dcf_model_details(dcf, cur)
 
     # ---- WACC build-up (make the discount rate transparent, not a black box) ----
     with st.expander("How the discount rate (WACC) is derived"):
