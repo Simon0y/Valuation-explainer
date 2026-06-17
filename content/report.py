@@ -48,7 +48,7 @@ class ReportData:
     # terminal_growth, net_debt, shares_outstanding
     valuation: Optional[dict] = None
 
-    # label -> multiple value, e.g. {"Trailing P/E": 28.4, "EV/EBITDA": 19.1}
+    # label -> multiple value, e.g. {"Trailing P/E (TTM)": 28.4, "EV/EBITDA": 19.1}
     multiples: dict = field(default_factory=dict)
 
     # source, peer_count, target_pe, median_peer_pe, target_growth
@@ -72,9 +72,15 @@ class ReportData:
         # Multiples "Trailing P/E" to the exact same number so the company never displays two
         # different P/E values across sections. (Absent a peer P/E, Key Multiples keeps its
         # fundamentals-derived fallback, and there is no peer section to disagree with.)
+        # The Key Multiples key carries its basis label ("Trailing P/E (TTM)" / "(annual)"),
+        # so match it by prefix rather than an exact "Trailing P/E".
         target_pe = (self.peers or {}).get("target_pe")
-        if target_pe is not None and self.multiples is not None:
-            self.multiples["Trailing P/E"] = target_pe
+        if target_pe is not None and self.multiples:
+            pe_key = next(
+                (k for k in self.multiples if str(k).startswith("Trailing P/E")), None
+            )
+            if pe_key is not None:
+                self.multiples[pe_key] = target_pe
 
 
 # --------------------------------------------------------------------------------------

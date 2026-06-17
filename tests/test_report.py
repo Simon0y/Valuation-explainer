@@ -161,17 +161,18 @@ def test_markdown_shows_note_when_thesis_unavailable():
 
 
 def test_trailing_pe_single_source_no_conflict():
-    # Multiples carry the fundamentals-derived P/E (38.2x); the peer pull carries the FMP
-    # TTM P/E (35.0x). The report must reconcile to ONE value — the peer/TTM source — so the
-    # same company never shows two different trailing P/Es.
+    # Key Multiples carries a stale 38.2x under the labeled TTM key; the peer pull carries the
+    # FMP TTM P/E (35.0x). The report reconciles by prefix to ONE value — the peer/TTM source —
+    # so the same company never shows two different trailing P/Es.
     data = ReportData(
         company_name="Conflict Co", symbol="CFL",
-        multiples={"Trailing P/E": 38.2, "EV/EBITDA": 19.1},
+        multiples={"Trailing P/E (TTM)": 38.2, "EV/EBITDA": 19.1},
         peers={"source": "stock-peers", "peer_count": 5,
                "target_pe": 35.0, "median_peer_pe": 28.0},
     )
-    # Reconciled in-memory: both sections reference the same number.
-    assert data.multiples["Trailing P/E"] == 35.0
+    # Reconciled in-memory: both sections reference the same number (matched by prefix, so the
+    # basis label is preserved).
+    assert data.multiples["Trailing P/E (TTM)"] == 35.0
 
     md = build_markdown(data)
     # Exactly one trailing-P/E value appears for the company in the rendered report.
@@ -180,15 +181,16 @@ def test_trailing_pe_single_source_no_conflict():
 
 
 def test_trailing_pe_fallback_when_no_peers():
-    # No peer P/E available → Key Multiples keeps its fundamentals figure, and there is no
-    # peer section to contradict it.
+    # No peer P/E available → Key Multiples keeps its supplied figure and basis label, and
+    # there is no peer section to contradict it.
     data = ReportData(
         company_name="Solo Co", symbol="SOLO",
-        multiples={"Trailing P/E": 30.0},
+        multiples={"Trailing P/E (annual)": 30.0},
     )
-    assert data.multiples["Trailing P/E"] == 30.0
+    assert data.multiples["Trailing P/E (annual)"] == 30.0
     md = build_markdown(data)
     assert "30.0x" in md
+    assert "Trailing P/E (annual)" in md  # basis is never ambiguous
     assert "## Peer Comparison" not in md
 
 

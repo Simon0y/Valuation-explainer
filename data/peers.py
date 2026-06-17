@@ -76,13 +76,28 @@ def _trailing_pe(client: FMPClient, symbol: str) -> Optional[float]:
         rows = client.get(EP_RATIOS_TTM, symbol)
     except FMPError:
         return None
+    if not rows:
+        return None
     return _num(_first(rows[0], "priceToEarningsRatioTTM", "peRatioTTM"))
+
+
+def fetch_trailing_pe_ttm(client: FMPClient, symbol: str) -> Optional[float]:
+    """Public single-source fetch of a company's trailing-twelve-month P/E.
+
+    Returns FMP's ``priceToEarningsRatioTTM`` (the same field the peer comparison uses for
+    every company), so the Overview multiples, the Peers target, and the PDF report all show
+    the SAME trailing P/E. ``None`` when the plan/endpoint doesn't supply it, callers then
+    fall back to an annual P/E and label it as such.
+    """
+    return _trailing_pe(client, symbol)
 
 
 def _revenue_growth_yoy(client: FMPClient, symbol: str) -> Optional[float]:
     try:
         rows = client.get(EP_GROWTH, symbol, limit=1)
     except FMPError:
+        return None
+    if not rows:
         return None
     # financial-growth returns newest-first; the latest fiscal year is row[0].
     return _num(_first(rows[0], "revenueGrowth"))
@@ -151,7 +166,7 @@ def build_peer_comparison(
     target = PeerPoint(
         symbol=symbol.upper(),
         name=profile.name,
-        pe=_trailing_pe(client, symbol),
+        pe=fetch_trailing_pe_ttm(client, symbol),
         revenue_growth=_revenue_growth_yoy(client, symbol),
         market_cap=profile.market_cap,
         is_target=True,

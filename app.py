@@ -35,7 +35,12 @@ from data.fmp_client import (
 )
 from data.fundamentals import fetch_financials, fetch_profile
 from data.news import fetch_recent_headlines
-from data.peers import PE_LABEL, PeerComparison, build_peer_comparison
+from data.peers import (
+    PE_LABEL,
+    PeerComparison,
+    build_peer_comparison,
+    fetch_trailing_pe_ttm,
+)
 from data.prices import fetch_price_history
 from ai_thesis import (
     AIError,
@@ -206,6 +211,20 @@ def load_peer_comparison(api_key: str, symbol: str) -> PeerComparison:
     client = FMPClient(api_key)
     profile = fetch_profile(client, symbol)
     return build_peer_comparison(client, symbol, profile, max_peers=_MAX_PEERS)
+
+
+# Hard cache: the company's OWN trailing-twelve-month P/E (FMP priceToEarningsRatioTTM) —
+# one cheap call so the Overview multiples, the Peers target, and the PDF report all show the
+# SAME trailing P/E. Best-effort: any plan/network/parse issue yields None, callers then fall
+# back to an annual P/E and label it "(annual)".
+@st.cache_data(show_spinner=False, ttl=24 * 3600, max_entries=64)
+def load_company_pe_ttm(api_key: str, symbol: str) -> float | None:
+    """Single source of truth for the company's trailing-twelve-month P/E (None if absent)."""
+    try:
+        client = FMPClient(api_key)
+        return fetch_trailing_pe_ttm(client, symbol)
+    except Exception:  # noqa: BLE001 — P/E is best-effort; never break the page
+        return None
 
 
 # Hard 24h cache: the Risk tab's ONE FMP dependency is this single price-history pull, so a
@@ -465,7 +484,7 @@ def render_sidebar_footer() -> None:
 # Tab: Overview — company profile, key financials, current price/metrics
 # ======================================================================================
 def render_overview_tab(
-    fin: CompanyFinancials, years_to_load: int
+    api_key: str, fin: CompanyFinancials, years_to_load: int
 ) -> None:
     profile = fin.profile
     latest = fin.latest
@@ -487,7 +506,8 @@ def render_overview_tab(
         p4.metric("Net debt (bridge)", fmt_compact(latest.net_debt_for_bridge(False)))
 
     # ---- Trailing multiples — honest "n/m" / "n/a" instead of negative or absurd ratios ----
-    mult_rows = _multiples_readout(fin)
+    pe_ttm = load_company_pe_ttm(api_key, profile.symbol)
+    mult_rows = _multiples_readout(fin, pe_ttm)
     if mult_rows:
         st.markdown("**Trailing multiples**")
         mcols = st.columns(len(mult_rows))
@@ -499,8 +519,10 @@ def render_overview_tab(
             if note and display in ("n/m", "n/a")
         ]
         caption = (
-            "Trailing (TTM/latest fiscal year), derived from data already in hand. "
-            "**n/m** = not meaningful (e.g. negative earnings/EBITDA); **n/a** = doesn't apply."
+            "Trailing P/E is trailing-twelve-month (TTM) where the data provider supplies it, "
+            "otherwise the latest fiscal year (each is labeled); EV multiples use the latest "
+            "fiscal year. **n/m** = not meaningful (e.g. negative earnings/EBITDA); "
+            "**n/a** = doesn't apply."
         )
         if flagged:
             caption += "  " + " · ".join(flagged) + "."
@@ -1178,10 +1200,14 @@ def _compute_dcf_result(fin: CompanyFinancials, include_lt_inv: bool, wacc_resul
         return None
 
 
-def _market_multiples(fin: CompanyFinancials) -> dict[str, float]:
-    """Trailing market multiples derived from data already in hand (NO extra FMP calls).
+def _market_multiples(
+    fin: CompanyFinancials, pe_ttm: float | None = None
+) -> dict[str, float]:
+    """Trailing market multiples for the report/thesis (the EV multiples need no FMP call).
 
-    Computed from the profile (market cap, price) and the latest fiscal year, so a missing
+    The trailing P/E uses the SAME single definition as everywhere else (TTM where available,
+    else annual), so its dict key carries the basis: "Trailing P/E (TTM)" or
+    "Trailing P/E (annual)". EV multiples come from the latest fiscal year in hand. A missing
     input simply omits that multiple rather than fabricating it."""
     multiples: dict[str, float] = {}
     profile = getattr(fin, "profile", None)
@@ -1191,14 +1217,11 @@ def _market_multiples(fin: CompanyFinancials) -> dict[str, float]:
 
     financial = is_financial(profile.sector, profile.industry)
     mcap = profile.market_cap
-    # Net income = pre-tax income − tax expense (both as reported).
-    net_income = None
-    if latest.income_before_tax is not None and latest.income_tax_expense is not None:
-        net_income = latest.income_before_tax - latest.income_tax_expense
 
-    # P/E is meaningful for financials too, but only with positive earnings.
-    if mcap and net_income and net_income > 0:
-        multiples["Trailing P/E"] = mcap / net_income
+    # Trailing P/E — one definition app-wide (TTM where available, else annual, labeled).
+    pe_label, _pe_display, pe_value, _pe_note = _company_trailing_pe(fin, pe_ttm)
+    if pe_value is not None:
+        multiples[pe_label] = pe_value
 
     # EV-based multiples don't apply to financials (debt is operational, so "net debt" and
     # therefore enterprise value are not meaningful) — omit them rather than mislead.
@@ -1212,7 +1235,51 @@ def _market_multiples(fin: CompanyFinancials) -> dict[str, float]:
     return multiples
 
 
-def _multiples_readout(fin: CompanyFinancials) -> list[tuple[str, str, str | None]]:
+# One definition of "trailing P/E" for the WHOLE app. Prefer TTM (FMP priceToEarningsRatioTTM,
+# the same field the peer comparison uses); fall back to an annual P/E only when TTM is absent,
+# and label which basis was used so the number is never ambiguous.
+_PE_TTM_LABEL = "Trailing P/E (TTM)"
+_PE_ANNUAL_LABEL = "Trailing P/E (annual)"
+
+
+def _annual_net_income(latest) -> float | None:
+    """Latest fiscal-year net income = pre-tax income − tax expense (both as reported)."""
+    if latest is None:
+        return None
+    if latest.income_before_tax is not None and latest.income_tax_expense is not None:
+        return latest.income_before_tax - latest.income_tax_expense
+    return None
+
+
+def _company_trailing_pe(
+    fin: CompanyFinancials, pe_ttm: float | None
+) -> tuple[str, str, float | None, str | None]:
+    """Resolve the company's trailing P/E once, for every surface (Overview, Peers, report).
+
+    Prefers the trailing-twelve-month figure (``pe_ttm``); only when that is unavailable does
+    it fall back to the annual P/E (market cap / latest fiscal-year net income), and it labels
+    which basis was used. Returns ``(label, display, value, note)`` where ``value`` is the
+    float multiple when meaningful (else None) and ``display`` is ``"28.4x"`` / ``"n/m"``
+    (negative earnings) / ``"—"`` (data unavailable).
+    """
+    # Prefer TTM whenever it is a positive, meaningful multiple.
+    if pe_ttm is not None and pe_ttm > 0:
+        return (_PE_TTM_LABEL, f"{pe_ttm:,.1f}x", pe_ttm, None)
+
+    # Fall back to the annual P/E and label it as such.
+    profile = getattr(fin, "profile", None)
+    mcap = getattr(profile, "market_cap", None) if profile is not None else None
+    net_income = _annual_net_income(fin.latest)
+    if mcap is None or net_income is None:
+        return (_PE_ANNUAL_LABEL, "—", None, "data unavailable")
+    if net_income <= 0:
+        return (_PE_ANNUAL_LABEL, "n/m", None, "negative earnings")
+    return (_PE_ANNUAL_LABEL, f"{mcap / net_income:,.1f}x", mcap / net_income, None)
+
+
+def _multiples_readout(
+    fin: CompanyFinancials, pe_ttm: float | None = None
+) -> list[tuple[str, str, str | None]]:
     """Trailing multiples formatted for display, honest about when they are NOT meaningful.
 
     Returns ``[(label, display, note), ...]`` where ``display`` is e.g. ``"28.4x"``, or
@@ -1226,21 +1293,14 @@ def _multiples_readout(fin: CompanyFinancials) -> list[tuple[str, str, str | Non
 
     financial = is_financial(profile.sector, profile.industry)
     mcap = profile.market_cap
-    net_income = None
-    if latest.income_before_tax is not None and latest.income_tax_expense is not None:
-        net_income = latest.income_before_tax - latest.income_tax_expense
     net_debt = latest.derived_net_debt
     ev = (mcap + net_debt) if (mcap is not None and net_debt is not None) else None
 
     rows: list[tuple[str, str, str | None]] = []
 
-    # Trailing P/E — valid for financials, but n/m on a loss.
-    if mcap is None or net_income is None:
-        rows.append(("Trailing P/E", "—", "data unavailable"))
-    elif net_income <= 0:
-        rows.append(("Trailing P/E", "n/m", "negative earnings"))
-    else:
-        rows.append(("Trailing P/E", f"{mcap / net_income:,.1f}x", None))
+    # Trailing P/E — TTM where available, else annual (labeled). Valid for financials too.
+    pe_label, pe_display, _pe_value, pe_note = _company_trailing_pe(fin, pe_ttm)
+    rows.append((pe_label, pe_display, pe_note))
 
     # EV/EBITDA — does not apply to financials; n/m on negative EBITDA.
     if financial:
@@ -1299,6 +1359,7 @@ def _build_thesis_context(
     risk = st.session_state.get("_report_risk") or {}
     peers = st.session_state.get("_report_peers") or {}
 
+    pe_ttm = load_company_pe_ttm(api_key, profile.symbol)
     ctx = ThesisContext(
         company_name=profile.name,
         symbol=profile.symbol,
@@ -1314,7 +1375,7 @@ def _build_thesis_context(
         terminal_growth=terminal_growth,
         revenue_growth=revenue_growth,
         ebit_margin=ebit_margin,
-        multiples=_market_multiples(fin),
+        multiples=_market_multiples(fin, pe_ttm),
         target_pe=peers.get("target_pe"),
         median_peer_pe=peers.get("median_peer_pe"),
         peer_count=peers.get("peer_count"),
@@ -1568,15 +1629,16 @@ def _render_peer_comparison(sym: str, comp: PeerComparison) -> None:
         note += f" {skipped} compan{'y' if skipped == 1 else 'ies'} skipped for missing/garbage data."
     st.caption(note)
 
-    # Compact data table (terminal-style), including rows skipped from the chart.
-    rows = {"Trailing P/E": [], "Rev growth YoY": [], "Market cap": []}
+    # Compact data table (terminal-style), including rows skipped from the chart. Every peer
+    # P/E here is TTM (PeerPoint.pe), so the column header carries the same (TTM) basis label.
+    rows = {pe_label: [], "Rev growth YoY": [], "Market cap": []}
     idx = []
     for p in points:
         psym = getattr(p, "symbol", "—")
         pe = getattr(p, "pe", None)
         growth = getattr(p, "revenue_growth", None)
         idx.append(f"▸ {psym}" if getattr(p, "is_target", False) else psym)
-        rows["Trailing P/E"].append("—" if pe is None else f"{pe:,.1f}")
+        rows[pe_label].append("—" if pe is None else f"{pe:,.1f}")
         rows["Rev growth YoY"].append("—" if growth is None else f"{growth:+.1%}")
         rows["Market cap"].append(fmt_compact(getattr(p, "market_cap", None)))
     with st.expander("Peer data table"):
@@ -1586,14 +1648,16 @@ def _render_peer_comparison(sym: str, comp: PeerComparison) -> None:
 # ======================================================================================
 # Stage 6 — Export Investment Report (packages already-computed session results only)
 # ======================================================================================
-def _collect_report_data(fin: CompanyFinancials) -> ReportData:
-    """Build a ReportData purely from session-state snapshots + the loaded financials.
+def _collect_report_data(api_key: str, fin: CompanyFinancials) -> ReportData:
+    """Build a ReportData from session-state snapshots + the loaded financials.
 
-    No FMP/Gemini calls: valuation/risk/peers come from snapshots the tabs already wrote,
-    multiples are derived from the in-hand financials, and the written analysis is read from
-    session state. The report prefers the CONCISE four-section thesis prepared for the PDF
-    (``_report_thesis_<sym>``); if that hasn't been generated yet it falls back to the
-    verbose AI Insights tab thesis. Missing sections are left as None and skipped."""
+    Valuation/risk/peers come from snapshots the tabs already wrote, EV multiples are derived
+    from the in-hand financials, and the written analysis is read from session state. The only
+    network touch is the cached company trailing P/E (TTM) — the same single source the
+    Overview and Peers tabs use — so the report's P/E can never disagree with them. The report
+    prefers the CONCISE four-section thesis prepared for the PDF (``_report_thesis_<sym>``); if
+    that hasn't been generated yet it falls back to the verbose AI Insights tab thesis. Missing
+    sections are left as None and skipped."""
     profile = fin.profile
     sym = profile.symbol
 
@@ -1607,9 +1671,10 @@ def _collect_report_data(fin: CompanyFinancials) -> ReportData:
         ai_note = None
         ai_news = bool(st.session_state.get("_ai_news_included", False))
 
-    # ReportData enforces a single source of truth for the company's trailing P/E across the
-    # Key Multiples and Peer Comparison sections (see ReportData.__post_init__), so the same
-    # company never shows two different P/E values in the report.
+    # Single source of truth for the company's trailing P/E: the SAME TTM value the Overview
+    # and Peers tabs show (ReportData.__post_init__ also reconciles Key Multiples to the peer
+    # target P/E as a belt-and-suspenders guard), so the report never shows two different P/Es.
+    pe_ttm = load_company_pe_ttm(api_key, sym)
     return ReportData(
         company_name=profile.name,
         symbol=sym,
@@ -1617,7 +1682,7 @@ def _collect_report_data(fin: CompanyFinancials) -> ReportData:
         currency=profile.currency or "",
         current_price=profile.price,
         valuation=st.session_state.get("_report_valuation"),
-        multiples=_market_multiples(fin),
+        multiples=_market_multiples(fin, pe_ttm),
         peers=st.session_state.get("_report_peers"),
         risk=st.session_state.get("_report_risk"),
         ai_thesis=ai_thesis,
@@ -1676,7 +1741,7 @@ def _render_export_section(
     base = sym.lower()
 
     try:
-        md_bytes = build_markdown(_collect_report_data(fin)).encode("utf-8")
+        md_bytes = build_markdown(_collect_report_data(api_key, fin)).encode("utf-8")
     except Exception:  # noqa: BLE001 — markdown is meant to be bulletproof, but never crash
         st.warning("Couldn't assemble the report from this session.")
         return
@@ -1701,7 +1766,7 @@ def _render_export_section(
                     api_key, fin, wacc_result, include_lt_inv
                 )
                 try:
-                    st.session_state[pdf_key] = build_pdf(_collect_report_data(fin))
+                    st.session_state[pdf_key] = build_pdf(_collect_report_data(api_key, fin))
                 except Exception:  # noqa: BLE001 — PDF is secondary; degrade gracefully
                     st.session_state.pop(pdf_key, None)
             have_pdf = pdf_key in st.session_state
@@ -1799,7 +1864,7 @@ def main() -> None:
         ["Overview", "Valuation", "Risk", "AI Insights", "Peers"]
     )
     with tab_overview:
-        render_overview_tab(fin, years_to_load)
+        render_overview_tab(api_key, fin, years_to_load)
     with tab_valuation:
         render_valuation_tab(fin, include_lt_inv, wacc_result, dcf_ready)
     with tab_risk:
